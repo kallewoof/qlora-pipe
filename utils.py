@@ -28,3 +28,21 @@ def count_str(num):
     elif num > 1000:
         return f"{num/1000:.2f}k"
     return str(num)
+
+def utfplot(eval_loss):
+    try:
+        import plotille
+    except ImportError:
+        # Skipping plots
+        return
+
+    # Create the plot
+    fig = plotille.Figure()
+    fig.width = 60
+    fig.height = 20
+    fig.set_x_limits(min_=0)
+    fig.x_label = 'Epoch'
+    fig.y_label = 'Evaluation Loss'
+    fig.plot(range(1, len(eval_loss) + 1), eval_loss, label='Eval Loss')
+    # Print the plot
+    print(fig.show())
