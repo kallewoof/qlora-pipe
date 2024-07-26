@@ -383,7 +383,7 @@ class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
     def __init__(self, config, quantization_config):
         model_config = transformers.Gemma2Config.from_pretrained(config['model'])
         # TODO: change this when Gemma works with other attn implementations
-        model_config._attn_implementation = 'eager'
+        model_config._attn_implementation = 'flash_attention_2'
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.Gemma2ForCausalLM.__init__(self, model_config)
