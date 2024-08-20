@@ -129,8 +129,6 @@ def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_g
 
 
 def evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps):
-    if is_main_process():
-        print('Running eval')
     start = time.time()
     loss = []
     for name, eval_dataloader in eval_dataloaders.items():
@@ -608,6 +606,7 @@ if __name__ == '__main__':
             print(f"Eval took {eta_str(eval_time)}.")
             model_engine.eval_time = eval_time
 
+    trainmark = time.time()
     while True:
         gc.collect()
         torch.cuda.empty_cache()
@@ -632,7 +631,11 @@ if __name__ == '__main__':
             tb_writer.add_scalar('train/epoch', step/steps_per_epoch, step)
 
         if step % config['eval_steps'] == 0:
-            eval_time = time.time()
+            if is_main_process():
+                eval_time = time.time()
+                trained_time = eval_time - trainmark
+                trainmark = eval_time
+                print(f"Trained for {eta_str(trained_time)}. Running eval")
             loss = evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps)
             saver.append_eval_results(loss)
             if is_main_process():
