@@ -38,6 +38,7 @@ parser.add_argument('--local_rank', type=int, default=-1,
 parser.add_argument('--debug_dataset', type=int, help='print out this many training examples and then quit')
 parser.add_argument('--resume_from_checkpoint', action='store_true', default=None, help='resume training from the most recent checkpoint')
 parser.add_argument('--no_quantiles', action='store_true', help='suppress output of quantile metrics')
+parser.add_argument('--append', action='store_true', help='Resume from the given checkpoint, but train on the entire dataset. This can be used to append additional training data after a previous training run. Note that learning rate must be manually adjusted as it will otherwise reset back to the starting learning rate.')
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 
@@ -377,6 +378,9 @@ if __name__ == '__main__':
         else False
     )
 
+    if args.append and not resume_from_checkpoint:
+        raise ValueError('append flag requires resume_from_checkpoint flag to be set')
+
     deepspeed.init_distributed()
 
     with open(os.path.join(config['model'], 'config.json')) as f:
@@ -576,7 +580,7 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError()
 
-    load_optimizer_states = config.get('load_optimizer_states', True)
+    load_optimizer_states = not args.append and config.get('load_optimizer_states', True)
     # if resuming and not loading optimizer states, we can't use warmup or the LR never changes from the initial value (still don't know why)
     if warmup_steps > 0 and load_optimizer_states:
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1/warmup_steps, total_iters=warmup_steps)
@@ -589,13 +593,18 @@ if __name__ == '__main__':
         load_path, client_state = model_engine.load_checkpoint(
             run_dir,
             load_module_strict=False,
-            load_lr_scheduler_states='force_constant_lr' not in config,
+            load_lr_scheduler_states=not args.append and 'force_constant_lr' not in config,
             load_optimizer_states=load_optimizer_states
         )
+        if args.append:
+            model_engine.global_steps = 0
+            model_engine.global_samples = 0
+            client_state['step'] = 0
         deepspeed.comm.barrier()  # just so the print below doesn't get swamped
         assert load_path is not None
-        train_dataloader.load_state_dict(client_state['custom_loader'])
-        step = client_state['step'] + 1
+        if not args.append:
+            train_dataloader.load_state_dict(client_state['custom_loader'])
+            step = client_state['step'] + 1
         del client_state
         # if we skip loading the optimizer states, we need to step the LR scheduler so we start at the right value
         if not load_optimizer_states:
