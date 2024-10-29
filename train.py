@@ -441,8 +441,10 @@ if __name__ == '__main__':
 
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
 
+    optim_config = config['optimizer']
+    lr = optim_config['lr']
+
     def get_optimizer(model_parameters):
-        breakpoint()
         optim_config = config['optimizer']
         lr = optim_config['lr']
         optim_type = optim_config['type'].lower()
@@ -589,6 +591,7 @@ if __name__ == '__main__':
     model_engine.lr_scheduler = lr_scheduler
 
     step = 1
+    token = 0
     if resume_from_checkpoint:
         load_path, client_state = model_engine.load_checkpoint(
             run_dir,
@@ -632,6 +635,7 @@ if __name__ == '__main__':
         )
         for name, eval_data in eval_data_map.items()
     }
+    eval_total_tokens = sum([d.data_sampler.total_tokens for d in eval_dataloaders.values()])
 
     tb_writer = SummaryWriter(log_dir=run_dir) if is_main_process() else None
 
@@ -643,7 +647,7 @@ if __name__ == '__main__':
 
     if is_main_process():
         model_engine.eval_time, model_engine.evals_left = None, int(evals_per_epoch * config['epochs'])
-    if config.get('eval_before_first_step', False) and not resume_from_checkpoint:
+    if config.get('eval_before_first_step', False) and (args.append or not resume_from_checkpoint):
         eval_time = time.time()
         loss = evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
         saver.append_eval_results(loss, save_best=False)
@@ -658,6 +662,8 @@ if __name__ == '__main__':
         torch.cuda.empty_cache()
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
+        # token += train_dataloader.pulled_tokens
+        # train_dataloader.pulled_tokens = 0
         if lora_config is not None:
             keys_scaled, avg_norm, max_norm, norms = apply_max_norm_regularization(pipeline_model, config)
 

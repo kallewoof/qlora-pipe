@@ -10,7 +10,7 @@ import accelerate
 from deepspeed import comm as dist
 from tqdm import tqdm
 
-from axolotl.utils.collators import DataCollatorForSeq2Seq
+from axolotl.utils.collators import DataCollatorForSeq2Seq # type: ignore
 from utils import is_main_process
 
 # A100 wants padding to multiple of 64, other cards are efficient with smaller, so just do 64
@@ -143,6 +143,7 @@ class PipelineDataLoader:
             shuffle=shuffle,
             group_by_length=group_by_length,
         )
+        self.samplelogger = open(f"/llm/logs/samples_{data_parallel_rank}.txt", "w")
         self.reset()
 
     def reset(self):
@@ -171,6 +172,12 @@ class PipelineDataLoader:
             self.num_batches_pulled += 1
             for batch in split_batch(macro_batch, self.gradient_accumulation_steps):
                 self.processed_tokens += batch[0][0].numel()
+        # batch is
+        #         ((tensor([[128000, 128006,    882,  ..., 128009, 128009, 128009],
+        #         [128000, 128006,    882,  ..., 128009, 128009, 128009]]), tensor([[1, 1, 1,  ..., 0, 0, 0],
+        #         [1, 1, 1,  ..., 0, 0, 0]]), tensor([[128000, 128006,    882,  ...,   -100,   -100,   -100],
+        #         [128000, 128006,    882,  ...,   -100,   -100,   -100]])), None)
+                self.samplelogger.write(f"Next batch:\n- {'\n- '.join(self.tokenizer.decode(b) for b in batch[0][0])}\n")
                 yield batch
 
     def _create_dataloader(self):
