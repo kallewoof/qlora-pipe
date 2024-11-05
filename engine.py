@@ -70,7 +70,6 @@ class CustomPipelineEngine(PipelineEngine):
         self._compute_loss = True
 
         # Do the work
-        print(f"micro batches: {self.micro_batches}")
         self.timers(TRAIN_BATCH_TIMER).start()
         sched = schedule.TrainSchedule(micro_batches=self.micro_batches,
                                        stages=self.num_stages,
