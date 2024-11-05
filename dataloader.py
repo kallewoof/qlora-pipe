@@ -178,6 +178,7 @@ class PipelineDataLoader:
         #         [1, 1, 1,  ..., 0, 0, 0]]), tensor([[128000, 128006,    882,  ...,   -100,   -100,   -100],
         #         [128000, 128006,    882,  ...,   -100,   -100,   -100]])), None)
                 self.samplelogger.write(f"Next batch:\n- {'\n- '.join(self.tokenizer.decode(b) for b in batch[0][0])}\n")
+                self.processed_tokens += batch[0][0].numel()
                 yield batch
 
     def _create_dataloader(self):
