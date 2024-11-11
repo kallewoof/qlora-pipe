@@ -16,7 +16,7 @@ def log(msg):
 def eta_str(eta):
     eta = int(eta)
     if eta > 3600:
-        doc = str(datetime.now() + timedelta(seconds=eta))
+        doc = str(datetime.now() + timedelta(seconds=eta)).rsplit(".", 1)[0]
         return f'{eta // 3600}h{(eta % 3600) // 60}m {doc}'
     return f'{eta // 60}m{eta % 60}s' if eta > 60 else f'{eta}s'
 
