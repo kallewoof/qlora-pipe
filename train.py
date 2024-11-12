@@ -531,7 +531,9 @@ if __name__ == '__main__':
             raise ValueError("Can't use both eval_steps and eval_proportion at the same time. Pick one.")
         eval_proportion = config['eval_proportion']
         eval_steps = steps_per_epoch * ((1 - eval_proportion) * eval_data_length) / (eval_proportion * relative_train_time)
-        eval_steps = max(10, int(round(eval_steps / 10) * 10))  # round to a number that ends in a zero (6..15 = 10, 16..25 = 20, ...)
+        eval_steps = int(round(eval_steps / 10) * 10)  # round to a number that ends in a zero (6..15 = 10, 16..25 = 20, ...)
+        if steps_per_epoch > 50:
+            eval_steps = max(10, eval_steps)  # set min at 10, unless we are training a tiny set in which case we allow more frequent eval
         config['eval_steps'] = eval_steps
 
     if 'save_after_evals' in config:
