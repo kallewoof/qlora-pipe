@@ -51,6 +51,7 @@ def find_lora_weights(key):
             elif 'lora_B' in lora_key:
                 lora_B = lora_weight
             else:
+                print(f"Unknown LoRA weight: {lora_key}")
                 raise RuntimeError()
     assert not ((lora_A is None) ^ (lora_B is None))
     return lora_A, lora_B

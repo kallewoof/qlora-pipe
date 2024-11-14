@@ -2,14 +2,15 @@ import os
 import os.path
 import sys
 
+from tqdm import tqdm
+
 
 sys.path.insert(0, os.path.abspath('axolotl/src'))
 
-import datasets
 import torch
 import yaml
-from tqdm import tqdm
 
+import datasets
 from axolotl.utils.data import prepare_dataset
 from axolotl.utils.dict import DictDefault
 from axolotl.utils.trainer import process_datasets_for_packing
@@ -89,6 +90,10 @@ def load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, overlap=0
         lambda x: {'attention_mask': torch.ones_like(x['input_ids']), 'labels': x['input_ids']},
         desc='adding attention_mask and labels',
     )
+    # My code commented out during rebase: (3 lines)
+    # #dataset = dataset.map(lambda x: {'tokens': slice_into_chunks(x['tokens'][0], sequence_len, overlap=overlap)}, batched=True, batch_size=1)
+    # # dataset = dataset.map(lambda x: {'input_ids': list(yield_sequences_from_token_batch(tokenizer, x['input_ids'], sequence_len))}, batched=True, batch_size=None, remove_columns=dataset.column_names, desc='splitting')
+    # dataset = dataset.map(lambda x: {'attention_mask': torch.ones_like(x['input_ids']), 'labels': x['input_ids']}, desc='adding attention_mask and labels')
     if eval_size > 0:
         split_datasets = dataset.train_test_split(test_size=eval_size, shuffle=True, seed=42)
         train_data = split_datasets['train']
