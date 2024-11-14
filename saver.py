@@ -11,7 +11,7 @@ import torch
 import transformers
 from safetensors.torch import save_file
 
-from utils import DTYPE_MAP, is_main_process
+from utils import DTYPE_MAP, is_main_process, utfplot
 
 
 last_checkpoint_time = None
@@ -41,7 +41,8 @@ def convert_state_dict_dtype(state_dict, dtype):
 
 
 class Saver:
-    def __init__(self, model_engine, pipeline_model, train_dataloader, lora_config, save_root, args, config):
+    def __init__(self, model_engine, pipeline_model, train_dataloader, lora_config, save_root, args, config, first_step):
+        self.loss_history = []
         self.model_engine = model_engine
         self.pipeline_model = pipeline_model
         self.train_dataloader = train_dataloader
@@ -55,14 +56,26 @@ class Saver:
             'step': [],
             'global_step': [],
         }
+        self.eval_steps = config['eval_steps']
+        self.unseen_steps = first_step - 1
 
-        # Load best loss from disk, if found, and if a best_loss model dir exists
+        self.old_best = None
         self.best_loss = None
-        best_loss_path = os.path.join(self.save_root, 'best_loss.txt')
-        if os.path.exists(best_loss_path) and os.path.isdir(os.path.join(self.save_root, 'best_loss')):
-            with open(best_loss_path) as f:
-                self.best_loss = float(f.read())
-            print(f'Loaded best loss from disk: {self.best_loss}')
+        losses = os.path.join(self.save_root, 'losses.json')
+        if os.path.exists(losses):
+            losses = json.load(open(losses))
+            if os.path.isdir(os.path.join(self.save_root, 'best_loss')):
+                self.best_loss = losses['best']
+            self.loss_history = losses['history']
+            print(f"Loaded loss info from disk: best={self.best_loss}, count={len(self.loss_history)}")
+        else:
+            # Load best loss from disk, if found, and if a best_loss model dir exists
+            best_loss_path = os.path.join(self.save_root, 'best_loss.txt')
+            if os.path.exists(best_loss_path) and os.path.isdir(os.path.join(self.save_root, 'best_loss')):
+                with open(best_loss_path) as f:
+                    self.best_loss = float(f.read())
+                print(f'Loaded best loss from disk: {self.best_loss}')
+                self.loss_history.append(self.best_loss)
 
     # TODO: this is pretty hacky. Is there a way to get the state_dict from the lora model directly,
     # but still know which layers the given pipeline parallel stage actually trained?
@@ -99,6 +112,7 @@ class Saver:
             shutil.copy(self.args.config, save_dir)
             if hasattr(self.args, 'deepspeed_config') and self.args.deepspeed_config is not None:
                 shutil.copy(self.args.deepspeed_config, save_dir)
+            print(f"LoRA adapters saved to {save_dir}")
             self.safe_rmtree(tmp_dir)
 
 
@@ -148,6 +162,7 @@ class Saver:
             for path in glob.glob(os.path.join(self.config['model'], '*')):
                 if os.path.basename(path) in additional_files_to_copy:
                     shutil.copy(path, save_dir)
+            print(f"Model saved to {save_dir}")
             self.safe_rmtree(tmp_dir)
 
     def will_save(self, type, name):
@@ -241,11 +256,14 @@ class Saver:
             sys.exit()
 
     def append_eval_results(self, loss, save_best=True):
+        def LOG(s):
+            self.train_dataloader.samplelogger.write(s + "\n")
+            print(s)
         if loss is not None:
             if self.best_loss is None:
-                print(f'Evaluation loss: {loss:.4f}')
+                LOG(f'Evaluation loss: {loss:.4f}')
             elif loss >= self.best_loss:
-                print(
+                LOG(
                     f'Evaluation loss: {loss:.4f} (best: {self.best_loss:.4f}, Δ: {self.best_loss - loss:.5f} [{100 * (1 - loss / self.best_loss):.2f}%])'
                 )
             if self.best_loss is None or loss < self.best_loss:
@@ -254,6 +272,14 @@ class Saver:
                 if save_best:
                     with open(os.path.join(self.save_root, '.pending_save_best_loss'), 'w') as f:
                         f.write(str(self.best_loss))
+            self.loss_history.append(loss)
+            plot = utfplot(self.loss_history, self.eval_steps, self.unseen_steps, return_also=True)
+            self.train_dataloader.pending = (self.train_dataloader.pending or '') + plot
+            json.dump({
+                'history': self.loss_history,
+                'best': self.best_loss
+            }, open(os.path.join(self.save_root, 'losses.json'), 'w'))
+
         deepspeed.comm.barrier()
 
 

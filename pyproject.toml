@@ -20,7 +20,9 @@ extend-select = [
     "UP", # Pyupgrade upgrades
     "W", # PEP8 warnings
     # "PT009", # Pytest assertions
+    "ISC", # This should handle string concatenation but it doesn't seem to do anything
 ]
+
 ignore = [
     "C901", # Function too complex
     "E501", # Line length (handled by ruff-format)

@@ -1,6 +1,7 @@
 import os
 from collections import defaultdict
 from inspect import signature
+from typing import Optional
 
 import accelerate
 import bitsandbytes as bnb
@@ -8,6 +9,7 @@ import transformers
 from deepspeed.accelerator import get_accelerator
 from hqq.core import quantize as hqq_quantize
 from torch import nn
+from tqdm import tqdm
 from transformers.integrations import get_keys_to_not_convert
 
 import hqq_utils
@@ -179,6 +181,7 @@ class LoaderUtil:
         self.local_rank = int(os.environ.get('LOCAL_RANK', None))
         assert self.local_rank is not None
         self.device = get_accelerator().device_name(self.local_rank)
+        self.pbar: Optional[tqdm] = None
 
         index_file = os.path.join(model_path, transformers.utils.SAFE_WEIGHTS_INDEX_NAME)
         if os.path.exists(index_file):
@@ -192,7 +195,7 @@ class LoaderUtil:
 
     def get_partial_state_dict(self, leaf_file):
         if self.loaded_state_dict is None or leaf_file != self.loaded_state_dict[0]:
-            print(f'loading checkpoint file {leaf_file}')
+            # print(f'loading checkpoint file {leaf_file}')
             state_dict = transformers.modeling_utils.load_state_dict(os.path.join(self.model_path, leaf_file))
             self.loaded_state_dict = (leaf_file, state_dict)
         return self.loaded_state_dict[1]
@@ -211,7 +214,8 @@ class LoaderUtil:
         self.is_loaded_in_4bit = True
 
     def load_state_dict_into_module(self, module):
-        print(f'load params into module {type(module)}')
+        if self.local_rank == 0:
+            self.pbar.set_description(f'load params into module {type(module)}')
         if isinstance(self.quantization_config, transformers.BitsAndBytesConfig):
             # bnb needs to replace with quantized linear before weights are loaded
             self.maybe_quantize(module)
@@ -228,6 +232,7 @@ class LoaderUtil:
             needed_checkpoint_files = ['model.safetensors']
 
         for checkpoint_file in needed_checkpoint_files:
+            # self.pbar.set_description(f"loading checkpoint file: {checkpoint_file}")
             state_dict = self.get_partial_state_dict(checkpoint_file)
             renamed_state_dict = {param_renaming_map[k]: v for k, v in state_dict.items() if k in param_renaming_map}
             # Use some transformers internals to avoid writing a bunch of code ourselves.
@@ -242,3 +247,16 @@ class LoaderUtil:
         module.to(self.device)
         if not isinstance(self.quantization_config, transformers.BitsAndBytesConfig):
             self.maybe_quantize(module)
+        if self.local_rank == 0:
+            count = 1
+            try:
+                with open('.loader_util') as f:
+                    count += len(f.read())
+                with open('.loader_util', 'w') as f:
+                    pass
+            except FileNotFoundError:
+                pass
+            self.pbar.update(count)
+        else:
+            with open(".loader_util", "a") as f:
+                f.write("!")

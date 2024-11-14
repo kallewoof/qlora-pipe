@@ -21,7 +21,8 @@ eval_after_last_step = false
 
 logging_steps = 10
 save_steps = 200
-checkpoint_every_n_minutes = 60
+# checkpoint_every_n_minutes = 60
+checkpoint_on_save = true
 model_weight_dtype = 'bfloat16'
 lora_weight_dtype = 'bfloat16'
 

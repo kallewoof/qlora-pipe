@@ -23,10 +23,11 @@ import hqq_utils
 import models
 import unsloth_utils
 from dataset_utils import load_datasets
+from optimizers import c_adamw
 from peft import LoraConfig, get_peft_model
 from peft.optimizers import create_loraplus_optimizer
 from saver import Saver
-from utils import DTYPE_MAP, is_main_process
+from utils import DTYPE_MAP, eta_str, is_main_process
 
 
 parser = argparse.ArgumentParser()
@@ -40,6 +41,9 @@ parser.add_argument(
     help='resume training from the most recent checkpoint',
 )
 parser.add_argument('--no_quantiles', action='store_true', help='suppress output of quantile metrics')
+parser.add_argument('--append', action='store_true', help='Resume from the given checkpoint, but train on the entire dataset. This can be used to append additional training data after a previous training run. Note that learning rate must be manually adjusted as it will otherwise reset back to the starting learning rate.')
+parser.add_argument('--local_timezone', action='store_true', help='Use local timezone for directory names for runs.')
+parser.add_argument('--starting_eval_loss', type=float, default=-1, help='Provide a starting eval loss to override initial eval loss check. Do not use unless you have run an instance on the same eval dataset/model once and know the eval loss.')
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 
@@ -166,8 +170,6 @@ def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_g
 
 
 def evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps):
-    if is_main_process():
-        print('Running eval')
     start = time.time()
     loss = []
     for name, eval_dataloader in eval_dataloaders.items():
@@ -296,6 +298,12 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
     else:
         raise NotImplementedError()
 
+    # Remove the loader util counter if stray one found.
+    try:
+        os.remove('.loader_util')
+    except Exception:
+        pass
+
     # CAREFUL! The "primary" layers of the model have to have 'decoderlayer' in them for
     # activation checkpointing to automatically work correctly.
     layers = model.to_layer_specs()
@@ -304,6 +312,12 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
         if isinstance(layer, LayerSpec) and 'decoderlayer' in layer.typename.__name__.lower():
             checkpointable_layers.add(layer.typename.__name__)
     checkpointable_layers = list(checkpointable_layers)
+
+    # Remove the loader util counter if stray one found.
+    try:
+        os.remove('.loader_util')
+    except Exception:
+        pass
 
     partition_method = 'estimated_size'
     if config['activation_checkpointing']:
@@ -401,6 +415,10 @@ if __name__ == '__main__':
         if 'resume_from_checkpoint' in config
         else False
     )
+    print(f"RESUME FROM CHECKPOINT = {resume_from_checkpoint}")
+
+    if args.append and not resume_from_checkpoint:
+        raise ValueError('append flag requires resume_from_checkpoint flag to be set')
 
     deepspeed.init_distributed()
 
@@ -450,7 +468,8 @@ if __name__ == '__main__':
 
     # if this is a new run, create a new dir for it
     if not resume_from_checkpoint and is_main_process():
-        run_dir = os.path.join(config['output_dir'], datetime.now(timezone.utc).strftime('%Y%m%d_%H-%M-%S'))
+        run_dir = os.path.join(config['output_dir'], datetime.now(None if args.local_timezone else timezone.utc).strftime('%Y%m%d_%H-%M-%S'))
+        print(f"NEW RUN DIR M8: {run_dir}")
         os.makedirs(run_dir, exist_ok=True)
         shutil.copy(args.config, run_dir)
         if hasattr(args, 'deepspeed_config') and args.deepspeed_config is not None:
@@ -458,6 +477,11 @@ if __name__ == '__main__':
     # wait for all processes then get the most recent dir (may have just been created)
     deepspeed.comm.barrier()
     run_dir = get_most_recent_run_dir(config['output_dir'])
+
+    # Commit the configuration files to git
+    with open("projects/last_run", "w") as f:
+        f.write(f"{datetime.now(None if args.local_timezone else timezone.utc).strftime('%Y%m%d_%H-%M-%S')}: {run_dir}\n")
+    os.system(f"cd projects && git commit -am 'RUN: {run_dir}'")
 
     # Ugly hack so we can move quantized models from GPU to CPU, and back to GPU again without triggering quantization a second time.
     bnb_cuda_old = bitsandbytes.nn.modules.Params4bit.cuda
@@ -497,12 +521,13 @@ if __name__ == '__main__':
 
             optimizer_cls = optimi.AdamW
             optimizer_kwargs['kahan_sum'] = optim_config.get('kahan_sum', True)
+        elif optim_type == 'c_adamw':
+            optimizer_cls = c_adamw.AdamW
         else:
             raise NotImplementedError(optim_type)
         if optim_config.get('use_loraplus', False):
             loraplus_lr_ratio = optim_config.get('loraplus_lr_ratio', 16)
             # TODO: handle params being thrown out here; why is it included in the first place?
-            # delete 'params' from optimizer_kwargs
             del optimizer_kwargs['params']
             return create_loraplus_optimizer(
                 model=pipeline_model,
@@ -543,6 +568,9 @@ if __name__ == '__main__':
                 module.move_mlp_to_cpu()
         torch.cuda.empty_cache()
 
+    # TODO: rank based!
+    samplelogger = open("/llm/logs/samples_0.txt" if is_main_process() else "/llm/logs/samples_1.txt", "w")
+
     train_dataloader = dataloader.PipelineDataLoader(
         train_data,
         tokenizer,
@@ -552,19 +580,43 @@ if __name__ == '__main__':
         model_engine.grid.get_data_parallel_rank(),
         group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
         batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
+        samplelogger=samplelogger,
     )
+    if is_main_process():
+        model_engine.total_tokens = train_dataloader.data_sampler.total_tokens * config['epochs']
+    model_engine.token_counter = train_dataloader # TODO: figure out why self.train_dataloader is None
     model_engine.set_dataloader(train_dataloader)
     steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
     model_engine.total_steps = steps_per_epoch * config['epochs']
 
+    # Determine train vs eval time spent
+    eval_data_length = sum([len(eval_data) for eval_data in eval_data_map.values()])
+    train_data_length = len(train_data)
+    relative_train_time = train_data_length * 3
+
+    eval_proportion = None
+    if 'eval_proportion' in config:
+        if 'eval_steps' in config:
+            raise ValueError("Can't use both eval_steps and eval_proportion at the same time. Pick one.")
+        eval_proportion = config['eval_proportion']
+        eval_steps = steps_per_epoch * ((1 - eval_proportion) * eval_data_length) / (eval_proportion * relative_train_time)
+        eval_steps = int(round(eval_steps / 10) * 10)  # round to a number that ends in a zero (6..15 = 10, 16..25 = 20, ...)
+        if steps_per_epoch > 50:
+            eval_steps = max(10, eval_steps)  # set min at 10, unless we are training a tiny set in which case we allow more frequent eval
+        config['eval_steps'] = eval_steps
+
+    save_after_evals = None
+    if 'save_after_evals' in config:
+        if 'save_steps' in config:
+            raise ValueError("Can't use both save_steps and save_after_evals at the same time. Pick one.")
+        save_after_evals = config['save_after_evals']
+        config['save_steps'] = max(10, int(save_after_evals * config['eval_steps']))
+
     if is_main_process():
         # Warn if eval dataset is unusually large compared to the eval steps
-        eval_data_length = sum([len(eval_data) for eval_data in eval_data_map.values()])
-        train_data_length = len(train_data)
         evals_per_epoch = steps_per_epoch / config['eval_steps']
         relative_eval_time = evals_per_epoch * eval_data_length
         # train step very roughly 3 times slower due to backprop + usually activation checkpointing is enabled
-        relative_train_time = train_data_length * 3
         # Expect <=15% of our time spent evaluating vs training
         fraction_evaling = relative_eval_time / (relative_eval_time + relative_train_time)
         print()
@@ -596,7 +648,8 @@ if __name__ == '__main__':
             'T_max': total_steps,
         }
         if 'lr_min' in optim_config:
-            lr_scheduler_kwargs['eta_min'] = optim_config['lr_min']
+            lr_scheduler_kwargs["eta_min"] = optim_config["lr_min"]
+            print(f"*** LR MIN = {optim_config['lr_min']} ***")
 
         # Normally, you would pass the lr_scheduler to deepspeed.initialize(). But we need the
         # global batch_size in order to make the lr_scheduler.
@@ -604,7 +657,7 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError()
 
-    load_optimizer_states = config.get('load_optimizer_states', True)
+    load_optimizer_states = not args.append and config.get('load_optimizer_states', True)
     # if resuming and not loading optimizer states, we can't use warmup or the LR never changes from the initial value (still don't know why)
     if warmup_steps > 0 and load_optimizer_states:
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
@@ -618,16 +671,22 @@ if __name__ == '__main__':
 
     step = 1
     if resume_from_checkpoint:
+        print("\n\n\n\n\n\n\n\t\t\t\t\tR E S U M I N G\n\n\n\n\n\t\t\t\t\tT R A I N I N G\n\n\n\n\n\n\n\n\n")
         load_path, client_state = model_engine.load_checkpoint(
             run_dir,
             load_module_strict=False,
-            load_lr_scheduler_states='force_constant_lr' not in config,
-            load_optimizer_states=load_optimizer_states,
+            load_lr_scheduler_states=not args.append and 'force_constant_lr' not in config,
+            load_optimizer_states=load_optimizer_states
         )
+        if args.append:
+            model_engine.global_steps = 0
+            model_engine.global_samples = 0
+            client_state['step'] = 0
         deepspeed.comm.barrier()  # just so the print below doesn't get swamped
         assert load_path is not None
-        train_dataloader.load_state_dict(client_state['custom_loader'])
-        step = client_state['step'] + 1
+        if not args.append:
+            train_dataloader.load_state_dict(client_state['custom_loader'])
+            step = client_state['step'] + 1
         del client_state
         # if we skip loading the optimizer states, we need to step the LR scheduler so we start at the right value
         if not load_optimizer_states:
@@ -656,6 +715,7 @@ if __name__ == '__main__':
             shuffle=False,
             group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
             batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
+            samplelogger=samplelogger,
         )
         for name, eval_data in eval_data_map.items()
     }
@@ -664,14 +724,34 @@ if __name__ == '__main__':
 
     epoch = train_dataloader.epoch
 
-    saver = Saver(model_engine, pipeline_model, train_dataloader, lora_config, run_dir, args, config)
+    print(f"saver with run_dir {run_dir}") # 20250305_21-57-19
+    saver = Saver(model_engine, pipeline_model, train_dataloader, lora_config, run_dir, args, config, first_step=step)
 
-    epoch = train_dataloader.epoch
+    if is_main_process():
+        model_engine.eval_time, model_engine.evals_left = None, int(evals_per_epoch * config['epochs'])
+        if step > 0:
+            model_engine.evals_left -= int(step / config['eval_steps'])
+    if args.append or not resume_from_checkpoint:
+        if args.starting_eval_loss > 0:
+            if is_main_process():
+                print(f"Using provided starting eval loss: {args.starting_eval_loss}")
+                saver.append_eval_results(args.starting_eval_loss, save_best=False)
+            else:
+                # Hack to not have rank 2+ print out utfplots
+                saver.append_eval_results(None, save_best=False)
+        elif config.get('eval_before_first_step', False):
+            eval_time = time.time()
+            loss = evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
+            eval_time = time.time() - eval_time
+            saver.append_eval_results(loss, save_best=False)
+            if is_main_process():
+                print(f"Eval took {eta_str(eval_time)}.")
+                model_engine.eval_time = eval_time
 
-    if config.get('eval_before_first_step', False) and not resume_from_checkpoint:
-        loss = evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
-        saver.append_eval_results(loss, save_best=False)
-
+    trainmark = time.time()
+    # stats = [[]]
+    # current_epoch_loss = stats[0]
+    noeval_countdown = 0
     while True:
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
@@ -692,9 +772,58 @@ if __name__ == '__main__':
                 tb_writer.add_histogram('train/weight_norm_hist', norms, step)
             tb_writer.add_scalar('train/epoch', step / steps_per_epoch, step)
 
-        if step % config['eval_steps'] == 0:
+        noeval_countdown -= 1
+        if step % config['eval_steps'] == 0 and noeval_countdown < 1:
+            if is_main_process():
+                eval_time = time.time()
+                trained_time = eval_time - trainmark
+                trainmark = eval_time
+                print(f"Trained for {eta_str(trained_time)}. Running eval")
             loss = evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps)
             saver.append_eval_results(loss)
+            if is_main_process():
+                eval_time = time.time() - eval_time
+                actual_proportion = eval_time / trained_time
+                print(f"Eval took {eta_str(eval_time)}. Eval vs training: {100 * actual_proportion:.2f}%")
+                if model_engine.eval_time is None:
+                    model_engine.eval_time = eval_time
+                model_engine.evals_left -= 1
+                # if eval_proportion is not None and abs(eval_proportion - actual_proportion) > 0.02:
+                #     tweaked = True
+                #     # We are 2%+ away from the target eval vs train proportion. Try to tweak
+
+                #     # eval_time == trained_time * eval_proportion
+                #     # eval_time == target_steps * time_per_step * eval_proportion
+                #     # target_steps =          eval_time
+                #     #               -------------------------------
+                #     #               time_per_step * eval_proportion
+                #     time_per_step = trained_time / config['eval_steps']
+                #     target_steps = max(10, int(eval_time / (time_per_step * eval_proportion) / 5) * 5)
+                #     if abs(target_steps - config['eval_steps']) > 4:
+                #         if target_steps > config['eval_steps']:
+                #             # Too frequently
+                #             noeval_countdown = target_steps - 1
+                #         config['eval_steps'] = target_steps
+                #     elif eval_proportion > actual_proportion:
+                #         # We are evaluating too seldomly
+                #         target = trained_time * eval_proportion
+                #         tweaked = config['eval_steps'] > 10
+                #         config['eval_steps'] = max(10, config['eval_steps'] - 5)
+                #     else:
+                #         # We are evaluating too frequently
+                #         config['eval_steps'] += 5
+                #         noeval_countdown = config['eval_steps'] - 1
+
+                #     if tweaked:
+                #         next_eval = (step + noeval_countdown + config['eval_steps']) // config['eval_steps']
+                #         next_eval *= config['eval_steps']
+                #         print(f"{eval_proportion:.2f} vs {actual_proportion:.2f} [{actual_proportion-eval_proportion:.2f}] :: Adjusting eval steps: {config['eval_steps']} with noeval_countdown {noeval_countdown}. Next eval at step {next_eval}.")
+
+                #         if save_after_evals is not None:
+                #             config['save_steps'] = max(10, int(save_after_evals * config['eval_steps']))
+                #             if saver.config['save_steps'] != config['save_steps']:
+                #                 print("Warning: saver config is detached.")
+                #                 saver.config['save_steps'] = config['save_steps']
 
         saver.process_step(step)
 
