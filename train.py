@@ -26,7 +26,7 @@ from dataset_utils import load_datasets
 from peft import LoraConfig, get_peft_model
 from peft.optimizers import create_loraplus_optimizer
 from saver import Saver
-from utils import DTYPE_MAP, is_main_process
+from utils import eta_str, is_main_process, DTYPE_MAP
 
 
 parser = argparse.ArgumentParser()
@@ -40,6 +40,7 @@ parser.add_argument(
     help='resume training from the most recent checkpoint',
 )
 parser.add_argument('--no_quantiles', action='store_true', help='suppress output of quantile metrics')
+parser.add_argument('--append', action='store_true', help='Resume from the given checkpoint, but train on the entire dataset. This can be used to append additional training data after a previous training run. Note that learning rate must be manually adjusted as it will otherwise reset back to the starting learning rate.')
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 
@@ -166,8 +167,6 @@ def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_g
 
 
 def evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps):
-    if is_main_process():
-        print('Running eval')
     start = time.time()
     loss = []
     for name, eval_dataloader in eval_dataloaders.items():
@@ -402,6 +401,9 @@ if __name__ == '__main__':
         else False
     )
 
+    if args.append and not resume_from_checkpoint:
+        raise ValueError('append flag requires resume_from_checkpoint flag to be set')
+
     deepspeed.init_distributed()
 
     with open(os.path.join(config['model'], 'config.json')) as f:
@@ -502,7 +504,6 @@ if __name__ == '__main__':
         if optim_config.get('use_loraplus', False):
             loraplus_lr_ratio = optim_config.get('loraplus_lr_ratio', 16)
             # TODO: handle params being thrown out here; why is it included in the first place?
-            # delete 'params' from optimizer_kwargs
             del optimizer_kwargs['params']
             return create_loraplus_optimizer(
                 model=pipeline_model,
@@ -553,18 +554,39 @@ if __name__ == '__main__':
         group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
         batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
     )
+    if is_main_process():
+        model_engine.total_tokens = train_dataloader.data_sampler.total_tokens * config['epochs']
+    model_engine.token_counter = train_dataloader # TODO: figure out why self.train_dataloader is None
     model_engine.set_dataloader(train_dataloader)
     steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
     model_engine.total_steps = steps_per_epoch * config['epochs']
 
+    # Determine train vs eval time spent
+    eval_data_length = sum([len(eval_data) for eval_data in eval_data_map.values()])
+    train_data_length = len(train_data)
+    relative_train_time = train_data_length * 3
+
+    if 'eval_proportion' in config:
+        if 'eval_steps' in config:
+            raise ValueError("Can't use both eval_steps and eval_proportion at the same time. Pick one.")
+        eval_proportion = config['eval_proportion']
+        eval_steps = steps_per_epoch * ((1 - eval_proportion) * eval_data_length) / (eval_proportion * relative_train_time)
+        eval_steps = int(round(eval_steps / 10) * 10)  # round to a number that ends in a zero (6..15 = 10, 16..25 = 20, ...)
+        if steps_per_epoch > 50:
+            eval_steps = max(10, eval_steps)  # set min at 10, unless we are training a tiny set in which case we allow more frequent eval
+        config['eval_steps'] = eval_steps
+
+    if 'save_after_evals' in config:
+        if 'save_steps' in config:
+            raise ValueError("Can't use both save_steps and save_after_evals at the same time. Pick one.")
+        save_after_evals = config['save_after_evals']
+        config['save_steps'] = max(10, int(save_after_evals * config['eval_steps']))
+
     if is_main_process():
         # Warn if eval dataset is unusually large compared to the eval steps
-        eval_data_length = sum([len(eval_data) for eval_data in eval_data_map.values()])
-        train_data_length = len(train_data)
         evals_per_epoch = steps_per_epoch / config['eval_steps']
         relative_eval_time = evals_per_epoch * eval_data_length
         # train step very roughly 3 times slower due to backprop + usually activation checkpointing is enabled
-        relative_train_time = train_data_length * 3
         # Expect <=15% of our time spent evaluating vs training
         fraction_evaling = relative_eval_time / (relative_eval_time + relative_train_time)
         print()
@@ -596,7 +618,8 @@ if __name__ == '__main__':
             'T_max': total_steps,
         }
         if 'lr_min' in optim_config:
-            lr_scheduler_kwargs['eta_min'] = optim_config['lr_min']
+            lr_scheduler_kwargs["eta_min"] = optim_config["lr_min"]
+            print(f"*** LR MIN = {optim_config['lr_min']} ***")
 
         # Normally, you would pass the lr_scheduler to deepspeed.initialize(). But we need the
         # global batch_size in order to make the lr_scheduler.
@@ -604,7 +627,7 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError()
 
-    load_optimizer_states = config.get('load_optimizer_states', True)
+    load_optimizer_states = not args.append and config.get('load_optimizer_states', True)
     # if resuming and not loading optimizer states, we can't use warmup or the LR never changes from the initial value (still don't know why)
     if warmup_steps > 0 and load_optimizer_states:
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
@@ -621,13 +644,18 @@ if __name__ == '__main__':
         load_path, client_state = model_engine.load_checkpoint(
             run_dir,
             load_module_strict=False,
-            load_lr_scheduler_states='force_constant_lr' not in config,
-            load_optimizer_states=load_optimizer_states,
+            load_lr_scheduler_states=not args.append and 'force_constant_lr' not in config,
+            load_optimizer_states=load_optimizer_states
         )
+        if args.append:
+            model_engine.global_steps = 0
+            model_engine.global_samples = 0
+            client_state['step'] = 0
         deepspeed.comm.barrier()  # just so the print below doesn't get swamped
         assert load_path is not None
-        train_dataloader.load_state_dict(client_state['custom_loader'])
-        step = client_state['step'] + 1
+        if not args.append:
+            train_dataloader.load_state_dict(client_state['custom_loader'])
+            step = client_state['step'] + 1
         del client_state
         # if we skip loading the optimizer states, we need to step the LR scheduler so we start at the right value
         if not load_optimizer_states:
@@ -664,14 +692,24 @@ if __name__ == '__main__':
 
     epoch = train_dataloader.epoch
 
-    saver = Saver(model_engine, pipeline_model, train_dataloader, lora_config, run_dir, args, config)
+    saver = Saver(model_engine, pipeline_model, train_dataloader, lora_config, run_dir, args, config, first_step=step)
 
-    epoch = train_dataloader.epoch
-
-    if config.get('eval_before_first_step', False) and not resume_from_checkpoint:
+    if is_main_process():
+        model_engine.eval_time, model_engine.evals_left = None, int(evals_per_epoch * config['epochs'])
+        if step > 0:
+            model_engine.evals_left -= int(step / config['eval_steps'])
+    if config.get('eval_before_first_step', False) and (args.append or not resume_from_checkpoint):
+        eval_time = time.time()
         loss = evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
         saver.append_eval_results(loss, save_best=False)
+        eval_time = time.time() - eval_time
+        if is_main_process():
+            print(f"Eval took {eta_str(eval_time)}.")
+            model_engine.eval_time = eval_time
 
+    trainmark = time.time()
+    # stats = [[]]
+    # current_epoch_loss = stats[0]
     while True:
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
@@ -693,8 +731,19 @@ if __name__ == '__main__':
             tb_writer.add_scalar('train/epoch', step / steps_per_epoch, step)
 
         if step % config['eval_steps'] == 0:
+            if is_main_process():
+                eval_time = time.time()
+                trained_time = eval_time - trainmark
+                trainmark = eval_time
+                print(f"Trained for {eta_str(trained_time)}. Running eval")
             loss = evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps)
             saver.append_eval_results(loss)
+            if is_main_process():
+                eval_time = time.time() - eval_time
+                print(f"Eval took {eta_str(eval_time)}. Eval vs training: {100 * eval_time / trained_time:.2f}%")
+                if model_engine.eval_time is None:
+                    model_engine.eval_time = eval_time
+                model_engine.evals_left -= 1
 
         saver.process_step(step)
 
