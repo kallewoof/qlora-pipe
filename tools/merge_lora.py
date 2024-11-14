@@ -41,7 +41,6 @@ if (lora_path / 'adapter_model.safetensors').exists():
 else:
     lora_state = torch.load(lora_path / 'adapter_model.bin', map_location=device)
 
-
 def find_lora_weights(key):
     lora_A = None
     lora_B = None
@@ -52,6 +51,7 @@ def find_lora_weights(key):
             elif 'lora_B' in lora_key:
                 lora_B = lora_weight
             else:
+                print(f"Unknown LoRA weight: {lora_key}")
                 raise RuntimeError()
     assert not ((lora_A is None) ^ (lora_B is None))
     return lora_A, lora_B

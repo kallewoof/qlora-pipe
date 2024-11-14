@@ -1,7 +1,8 @@
-from collections import deque
 import time
+from collections import deque
 
 import deepspeed
+import numpy as np
 import torch
 import transformers
 from deepspeed import comm as dist
@@ -40,8 +41,8 @@ from deepspeed.runtime.pipe.topology import ProcessTopology
 from deepspeed.runtime.utils import PartitionedTensor
 from torch import nn
 
-from utils.utils import eta_str, log, is_main_process
-from utils.dataloader import split_batch, example_to_tuple
+from utils.dataloader import example_to_tuple, split_batch
+from utils.utils import count_str, eta_str, is_main_process, log
 
 
 def initialize(
@@ -104,7 +105,14 @@ class CustomPipelineEngine(PipelineEngine):
     ):
         super().__init__(*args, **kwargs)
         self.total_steps = None
-        self.etas = deque()
+
+        self.total_tokens = None
+        self.token_counter = None
+        self.last_finished = 0
+        self.elapsed_hist = [deque(), deque()]
+        self.eval_time = None
+        self.evals_left = 0
+
         self.rl_config = {}
         # Assign list to avoid registering the nn.Module
         self.lora_model = [lora_model]
@@ -143,7 +151,7 @@ class CustomPipelineEngine(PipelineEngine):
 
     def train_batch(self):
         if not torch._C.is_grad_enabled():
-            raise RuntimeError(f'train_batch() requires gradients enabled. Use eval_batch() instead.')
+            raise RuntimeError('train_batch() requires gradients enabled. Use eval_batch() instead.')
         self.timers(TRAIN_BATCH_TIMER).start()
 
         # sequence length may change between macro batches (but not between gradient accumulation steps)
@@ -181,22 +189,63 @@ class CustomPipelineEngine(PipelineEngine):
         self.timers(TRAIN_BATCH_TIMER).stop()
 
         if self.global_steps % self.steps_per_print() == 0:
+            # print(f"+ {self.global_rank}: {self.token_counter.processed_tokens}")
+            token_sum = torch.tensor(self.token_counter.processed_tokens, device='cuda')
+            dist.reduce(token_sum, 0)
             if self.global_rank == 0:
+                def LOG(s):
+                    self.token_counter.pending = (self.token_counter.pending or '') + s + '\n'
+                    log(s)
+                eval_rem = self.eval_time * self.evals_left if self.eval_time is not None else 0
+                # Temporary until we confirm this shit works: {
+                token_sum = token_sum.item()
+                if token_sum % self.num_stages != 0:
+                    print(f"WARNING: {token_sum} not evenly divisible by {self.num_stages}: {token_sum / self.num_stages}")
+                token_sum = token_sum // self.num_stages
+                # } -- replaces:
+                # token_sum = token_sum.item() // self.num_stages
+                # print(f"/ {self.num_stages}\n= {token_sum} (mb={self.micro_batches}, stages={self.num_stages})")
                 elapsed = self.timers(TRAIN_BATCH_TIMER).elapsed(reset=True) / 1000.0
                 iter_time = elapsed / self.steps_per_print()
-                eta = iter_time * (self.total_steps - self.global_steps)
-                self.etas.append(eta)
-                while len(self.etas) > 10:
-                    self.etas.popleft()
-                rolling_eta = sum(self.etas) / len(self.etas)
                 tput = self.train_batch_size() / iter_time
-                log(
-                    f'step: {self.global_steps:>5} / {self.total_steps:>5} '
-                    f'loss: {self.agg_train_loss:0.4f} '
-                    f'iter time (s): {iter_time:0.3f} '
-                    f'samples/sec: {tput:0.3f} '
-                    f'eta: {eta_str(rolling_eta)} '
-                )
+                iter_expr = f'it/s={1.0/iter_time:.2f}' if iter_time < 1 else f's/it={iter_time:.3f}'
+                tput_expr = f's/sample={1.0/tput:.2f}' if tput < 1 else f'samples/s={tput:.3f}'
+
+                if self.last_finished == 0 and self.global_steps > 1:
+                    # No ETA for the first step, if it involves a resume as results will be off
+                    LOG(f'{self.global_steps:>5} / {self.total_steps:>5} '
+                        f'L={self.agg_train_loss:0.4f} '
+                        f'{iter_expr} '
+                        f'{tput_expr}')
+                else:
+                    processed_tokens = token_sum - self.last_finished
+                    tokens_per_second = processed_tokens / elapsed
+                    self.elapsed_hist[0].append(processed_tokens)
+                    self.elapsed_hist[1].append(iter_time)
+                    # we avoid showing ETAs until we have at least 3 data samples as the polyfit is garbage otherwise
+                    if len(self.elapsed_hist[0]) > 2:
+                        fit = np.polyfit(self.elapsed_hist[0], self.elapsed_hist[1], 1) # , w=weights)
+                        # ETA is (1) a constant per batch (i.e. fit[1] * remaining batches), and (2) a linear value that rises with token count (i.e. fit[0] * tokens left)
+                        eta = fit[1] * (self.total_steps - self.global_steps) + fit[0] * (self.total_tokens - token_sum)
+                        eta += eval_rem
+                        eta = f'eta={eta_str(eta)}'
+                    else:
+                        fit = None
+                        eta = ''
+
+                    while len(self.elapsed_hist[0]) > 30:
+                        self.elapsed_hist[0].popleft()
+                        self.elapsed_hist[1].popleft()
+                    # rolling_eta = sum(self.etas) / len(self.etas)
+                    LOG(f'{self.global_steps:>5} / {self.total_steps:>5} '
+                        f'L={self.agg_train_loss:0.4f} '
+                        f'T={int(processed_tokens)} '
+                        f'[{count_str(token_sum)} / {count_str(self.total_tokens)} = {100.0 * token_sum/self.total_tokens:.2f}%] '
+                        f'tok/s: {tokens_per_second:0.3f} '
+                        f'{iter_expr} '
+                        f'{tput_expr} '
+                        f'{eta}')
+                self.last_finished = token_sum
             else:
                 self.timers(TRAIN_BATCH_TIMER).elapsed(reset=True)
 
