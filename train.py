@@ -514,8 +514,6 @@ if __name__ == '__main__':
             raise ValueError("Can't use both save_steps and save_after_evals at the same time. Pick one.")
         save_after_evals = config['save_after_evals']
         config['save_steps'] = max(10, int(save_after_evals * config['eval_steps']))
-        if is_main_process() and config['save_steps'] < 50:
-            print(f"WARNING: unusually low save_steps value: {config['save_steps']}. Is save_after_evals = {config['save_after_evals']} correct?")
 
     if is_main_process():
         # Warn if eval dataset is unusually large compared to the eval steps
