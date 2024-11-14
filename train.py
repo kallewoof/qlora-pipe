@@ -10,7 +10,6 @@ import json
 import gc
 
 import torch
-from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 import transformers
 from peft import LoraConfig, get_peft_model
@@ -606,9 +605,16 @@ if __name__ == '__main__':
 
     epoch = train_dataloader.epoch
 
+    if is_main_process():
+        model_engine.eval_time, model_engine.evals_left = None, int(evals_per_epoch * config['epochs'])
     if config.get('eval_before_first_step', False) and not resume_from_checkpoint:
+        eval_time = time.time()
         loss = evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
         saver.append_eval_results(loss, save_best=False)
+        eval_time = time.time() - eval_time
+        if is_main_process():
+            print(f"Eval took {eta_str(eval_time)}.")
+            model_engine.eval_time = eval_time
 
     while True:
         gc.collect()
@@ -634,8 +640,15 @@ if __name__ == '__main__':
             tb_writer.add_scalar('train/epoch', step/steps_per_epoch, step)
 
         if step % config['eval_steps'] == 0:
+            eval_time = time.time()
             loss = evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps)
             saver.append_eval_results(loss)
+            if is_main_process():
+                eval_time = time.time() - eval_time
+                print(f"Eval took {eta_str(eval_time)}. Eval vs training: {100 * eval_time / trained_time:.2f}%")
+                if model_engine.eval_time is None:
+                    model_engine.eval_time = eval_time
+                model_engine.evals_left -= 1
 
         saver.process_step(step)
 
