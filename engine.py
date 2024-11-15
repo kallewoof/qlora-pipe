@@ -86,7 +86,7 @@ class CustomPipelineEngine(PipelineEngine):
             dist.reduce(token_sum, 0)
             if self.global_rank == 0:
                 eval_rem = self.eval_time * self.evals_left if self.eval_time is not None else 0
-                token_sum = token_sum.item() / self.num_stages
+                token_sum = token_sum.item() / self.num_stages / self.micro_batches
                 elapsed = self.timers(TRAIN_BATCH_TIMER).elapsed(reset=True) / 1000.0
                 iter_time = elapsed / self.steps_per_print()
                 tput = self.train_batch_size() / iter_time
