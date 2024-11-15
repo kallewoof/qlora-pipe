@@ -90,8 +90,8 @@ class CustomPipelineEngine(PipelineEngine):
                 elapsed = self.timers(TRAIN_BATCH_TIMER).elapsed(reset=True) / 1000.0
                 iter_time = elapsed / self.steps_per_print()
                 tput = self.train_batch_size() / iter_time
-                iter_expr = f'{1.0/iter_time:.2f} it/s' if iter_time < 1 else f'{iter_time:.3f} s/it'
-                tput_expr = f'{1.0/tput:.2f} s/sample' if tput < 1 else f'{tput:.3f} samples/s'
+                iter_expr = f'it/s: {1.0/iter_time:.2f}' if iter_time < 1 else f's/it: {iter_time:.3f}'
+                tput_expr = f's/sample: {1.0/tput:.2f}' if tput < 1 else f'samples/it: {tput:.3f}'
 
                 if self.last_finished == 0 and self.global_steps > 1:
                     # No ETA for the first step, if it involves a resume as results will be off
