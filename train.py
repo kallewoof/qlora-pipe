@@ -643,10 +643,10 @@ if __name__ == '__main__':
 
     saver = Saver(model_engine, pipeline_model, train_dataloader, lora_config, run_dir, args, config, first_step=step)
 
-    epoch = train_dataloader.epoch
-
     if is_main_process():
         model_engine.eval_time, model_engine.evals_left = None, int(evals_per_epoch * config['epochs'])
+        if step > 0:
+            model_engine.evals_left -= int(step / config['eval_steps'])
     if config.get('eval_before_first_step', False) and (args.append or not resume_from_checkpoint):
         eval_time = time.time()
         loss = evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
@@ -662,8 +662,6 @@ if __name__ == '__main__':
         torch.cuda.empty_cache()
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
-        # token += train_dataloader.pulled_tokens
-        # train_dataloader.pulled_tokens = 0
         if lora_config is not None:
             keys_scaled, avg_norm, max_norm, norms = apply_max_norm_regularization(pipeline_model, config)
 
