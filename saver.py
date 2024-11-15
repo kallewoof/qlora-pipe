@@ -53,14 +53,22 @@ class Saver:
         self.eval_steps = config['eval_steps']
         self.unseen_steps = first_step - 1
 
-        # Load best loss from disk, if found, and if a best_loss model dir exists
         self.best_loss = None
-        best_loss_path = os.path.join(self.save_root, 'best_loss.txt')
-        if os.path.exists(best_loss_path) and os.path.isdir(os.path.join(self.save_root, 'best_loss')):
-            with open(best_loss_path, 'r') as f:
-                self.best_loss = float(f.read())
-            print(f'Loaded best loss from disk: {self.best_loss}')
-            self.loss_history.append(self.best_loss)
+        losses = os.path.join(self.save_root, 'losses.json')
+        if os.path.exists(losses):
+            losses = json.load(open(losses))
+            if os.path.isdir(os.path.join(self.save_root, 'best_loss')):
+                self.best_loss = losses['best']
+            self.loss_history = losses['history']
+            print(f"Loaded loss info from disk: best={self.best_loss}, count={len(self.loss_history)}")
+        else:
+            # Load best loss from disk, if found, and if a best_loss model dir exists
+            best_loss_path = os.path.join(self.save_root, 'best_loss.txt')
+            if os.path.exists(best_loss_path) and os.path.isdir(os.path.join(self.save_root, 'best_loss')):
+                with open(best_loss_path, 'r') as f:
+                    self.best_loss = float(f.read())
+                print(f'Loaded best loss from disk: {self.best_loss}')
+                self.loss_history.append(self.best_loss)
 
 
     # TODO: this is pretty hacky. Is there a way to get the state_dict from the lora model directly,
@@ -244,4 +252,9 @@ class Saver:
                         f.write(str(self.best_loss))
             self.loss_history.append(loss)
             utfplot(self.loss_history, self.eval_steps, self.unseen_steps)
+            json.dump({
+                'history': self.loss_history,
+                'best': self.best_loss
+            }, open(os.path.join(self.save_root, 'losses.json'), 'w'))
+
         deepspeed.comm.barrier()
