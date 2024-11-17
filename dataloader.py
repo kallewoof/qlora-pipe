@@ -89,15 +89,18 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
         # make sure the largest batch comes first to OOM sooner rather than later
         largest_global_batch = 0
         max_tokens = 0
-        self.total_tokens = 0
+        total_tokens = 0
         for global_batch_idx, batch in enumerate(global_batches):
             total_batch_tokens = batch_size_tokens_after_padding(batch)
-            self.total_tokens += total_batch_tokens
+            total_tokens += total_batch_tokens
             if total_batch_tokens > max_tokens:
                 max_tokens = total_batch_tokens
                 largest_global_batch = global_batch_idx
         global_batches[0], global_batches[largest_global_batch] = global_batches[largest_global_batch], global_batches[0]
+        tally_tokens = torch.tensor(total_tokens, device='cuda')
+        dist.reduce(tally_tokens, dst=0)
         if is_main_process():
+            self.total_tokens = tally_tokens
             print(f"{count_str(self.total_tokens)} tokens")
 
         batches_for_this_rank = [global_batch[self.rank:len(global_batch):self.num_replicas] for global_batch in global_batches]
