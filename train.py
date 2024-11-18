@@ -441,9 +441,10 @@ if __name__ == '__main__':
 
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
 
+    optim_config = config['optimizer']
+    lr = optim_config['lr']
+
     def get_optimizer(model_parameters):
-        optim_config = config['optimizer']
-        lr = optim_config['lr']
         optim_type = optim_config['type'].lower()
         optimizer_kwargs = {
             "params": model_parameters,
