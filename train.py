@@ -512,8 +512,8 @@ if __name__ == '__main__':
         group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
         batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
     )
-    total_tokens = train_dataloader.data_sampler.total_tokens * config['epochs']
-    model_engine.total_tokens = total_tokens
+    if is_main_process():
+        model_engine.total_tokens = train_dataloader.data_sampler.total_tokens * config['epochs']
     model_engine.token_counter = train_dataloader # TODO: figure out why self.train_dataloader is None
     model_engine.set_dataloader(train_dataloader)
     steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
@@ -633,7 +633,6 @@ if __name__ == '__main__':
         )
         for name, eval_data in eval_data_map.items()
     }
-    eval_total_tokens = sum([d.data_sampler.total_tokens for d in eval_dataloaders.values()])
 
     tb_writer = SummaryWriter(log_dir=run_dir) if is_main_process() else None
 
