@@ -61,11 +61,14 @@ print('Copying unmergable files to output')
 for filepath in input_path.glob('*'):
     if filepath in shards:
         continue
+    filepath = Path(filepath)
+    if filepath.is_dir():
+        continue
     if filepath.suffix == ".gguf":
         # Skip unrelated stray quantizations
         continue
-    filepath = Path(filepath)
-    if filepath.is_dir():
+    if filepath.suffix == ".safetensors":
+        # Consolidated, possibly
         continue
     if filepath.suffix == ".gguf":
         # Skip unrelated stray quantizations
