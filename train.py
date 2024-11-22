@@ -589,7 +589,6 @@ if __name__ == '__main__':
     model_engine.lr_scheduler = lr_scheduler
 
     step = 1
-    token = 0
     if resume_from_checkpoint:
         load_path, client_state = model_engine.load_checkpoint(
             run_dir,
