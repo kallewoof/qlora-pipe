@@ -1,6 +1,7 @@
 import math
 import sys
 import os.path
+
 sys.path.insert(0, os.path.abspath('axolotl/src'))
 
 import torch
@@ -98,10 +99,9 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
                 largest_global_batch = global_batch_idx
         global_batches[0], global_batches[largest_global_batch] = global_batches[largest_global_batch], global_batches[0]
         tally_tokens = torch.tensor(total_tokens, device='cuda')
-        dist.reduce(tally_tokens, dst=0)
-        if is_main_process():
-            self.total_tokens = tally_tokens
-            print(f"{count_str(self.total_tokens)} tokens")
+        dist.all_reduce(tally_tokens)
+        self.total_tokens = tally_tokens
+        print(f"rank {rank}: {count_str(self.total_tokens)} tokens/epoch")
 
         batches_for_this_rank = [global_batch[self.rank:len(global_batch):self.num_replicas] for global_batch in global_batches]
         self.indices = [[i for i, _ in batch] for batch in batches_for_this_rank]
@@ -136,6 +136,7 @@ class PipelineDataLoader:
         self.batch_size_tokens = batch_size_tokens
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.pad_to_multiple_of = pad_to_multiple_of
+        self.skip_batches = 0
         self.data_sampler = DistributedBatchSamper(
             dataset=dataset,
             batch_size=self.batch_size,
@@ -172,26 +173,34 @@ class PipelineDataLoader:
 
     def _pull_batches_from_dataloader(self):
         for macro_batch in self.dataloader:
+            if self.skip_batches > 0:
+                self.skip_batches -= 1
+                continue
             self.num_batches_pulled += 1
             for batch in split_batch(macro_batch, self.gradient_accumulation_steps):
-                self.processed_tokens += batch[0][0].numel()
+                # self.processed_tokens += batch[0][0].numel()
         # batch is
         #         ((tensor([[128000, 128006,    882,  ..., 128009, 128009, 128009],
         #         [128000, 128006,    882,  ..., 128009, 128009, 128009]]), tensor([[1, 1, 1,  ..., 0, 0, 0],
         #         [1, 1, 1,  ..., 0, 0, 0]]), tensor([[128000, 128006,    882,  ...,   -100,   -100,   -100],
         #         [128000, 128006,    882,  ...,   -100,   -100,   -100]])), None)
                 self.samplelogger.write(f"Next batch:\n- {'\n- '.join(self.tokenizer.decode(b) for b in batch[0][0])}\n")
-                self.processed_tokens += batch[0][0].numel()
+                # self.processed_tokens += batch[0][0].numel()
                 yield batch
 
     def _create_dataloader(self):
         data_collator = DataCollatorForSeq2Seq(self.tokenizer, pad_to_multiple_of=self.pad_to_multiple_of)
         def collate_fn(examples):
             batch = data_collator(examples)
+
+            input_token_count = batch['input_ids'].ne(self.tokenizer.pad_token_id).sum().item()
+            self.processed_tokens += input_token_count
+
             # input to pipeline is (input_ids, attention_mask, labels)
             # this needs to return (features, labels)
             # it is OK if labels is None (the model just returns the loss anyway)
             return ((batch['input_ids'], batch['attention_mask'], batch['labels']), None)
+
         self.dataloader = DataLoader(
             self.dataset,
             pin_memory=True,
@@ -210,8 +219,11 @@ class PipelineDataLoader:
 
     def load_state_dict(self, state_dict):
         self.epoch = state_dict['epoch']
+        self.processed_tokens = (self.epoch - 1) * self.data_sampler.total_tokens
         self.num_batches_pulled = state_dict['num_batches_pulled']
-        self.dataloader = accelerate.skip_first_batches(self.dataloader, self.num_batches_pulled)
+        # TODO: see if we can route this through accelerate still and still get the collate_fn counting correctly
+        self.skip_batches = self.num_batches_pulled
+        # self.dataloader = accelerate.skip_first_batches(self.dataloader, self.num_batches_pulled)
         self.data = self._pull_batches_from_dataloader()
 
     # Only the first and last stages in the pipeline pull from the dataloader. Parts of the code need

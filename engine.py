@@ -124,7 +124,7 @@ class CustomPipelineEngine(PipelineEngine):
                     log(f'step: {self.global_steps:>5} / {self.total_steps:>5} '
                         f'loss: {self.agg_train_loss:0.4f} '
                         f'tokens: {int(processed_tokens)} '
-                        f'[{count_str(token_sum)} / {count_str(self.total_tokens)} = {token_sum/self.total_tokens:.4f}] '
+                        f'[{count_str(token_sum)} / {count_str(self.total_tokens)} = {100.0 * token_sum/self.total_tokens:.2f}%] '
                         f'tok/s: {tokens_per_second:0.3f} '
                         f'{iter_expr} '
                         f'{tput_expr} '

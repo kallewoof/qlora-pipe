@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import sys
 import os.path
 import torch
+import numpy as np
 
 sys.path.insert(0, os.path.abspath('axolotl/src'))
 
@@ -29,6 +30,35 @@ def count_str(num):
     elif num > 1000:
         return f"{num/1000:.2f}k"
     return str(num)
+
+class WeightedEstimator:
+    """
+    Estimates the time to complete a set of jobs of different weights.
+    """
+    def __init__(self, total_steps: int, total_weight: int, estimator_sz: 30):
+        self.total_steps = total_steps
+        self.total_weight = total_weight
+        self.estimator_sz = estimator_sz
+        self.rem_weight = total_weight
+        self.rem_steps = total_steps
+        self.times, self.weights = [], []
+        self.polyfit = None
+
+    def completed(self, time, weight):
+        self.rem_weight -= weight
+        self.rem_steps -= 1
+        self.times.append(time)
+        self.weights.append(weight)
+        self.polyfit = np.polyfit(self.weights, self.times, 1)
+        if len(self.times) > self.estimator_sz:
+            self.times.pop(0)
+            self.weights.pop(0)
+
+    def eta(self):
+        return self.polyfit[1] * (self.total_steps - self.finished_steps) + self.polyfit[0] * (self.total_weight - self.finished_weight)
+
+    def __call__(self, added: float):
+        return eta_str(added + self.eta())
 
 def utfplot(eval_loss, eval_steps=100, unseen_steps=0):
     try:
