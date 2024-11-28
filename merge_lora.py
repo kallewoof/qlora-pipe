@@ -70,12 +70,6 @@ for filepath in input_path.glob('*'):
     if filepath.suffix == ".safetensors":
         # Consolidated, possibly
         continue
-    if filepath.suffix == ".gguf":
-        # Skip unrelated stray quantizations
-        continue
-    if filepath.suffix == ".safetensors":
-        # Consolidated, possibly
-        continue
     print(f'copying {filepath.name} to output')
     shutil.copy(filepath, output_path)
 
