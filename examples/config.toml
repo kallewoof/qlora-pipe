@@ -61,7 +61,7 @@ logging_steps = 10  # how often to log in Tensorboard
 # Sets save_steps to eval_steps * save_after_evals.
 # Requires that save_steps is commented out or removed.
 save_after_evals = 2
-#save_steps = 200  # how often to save the model
+# save_steps = 200  # how often to save the model
 checkpoint_every_n_minutes = 60  # how frequently to checkpoint training states (used for resuming training)
 # checkpoint_on_save = true  # alternative to the above, this will cause a checkpoint save every time a regular save occurs (note: this setting takes precedence over checkpoint_every_n_minutes)
 # dtype to load the underlying model weights in
