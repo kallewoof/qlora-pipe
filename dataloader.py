@@ -11,18 +11,18 @@ from deepspeed import comm as dist
 from torch.utils.data import DataLoader
 
 from axolotl.utils.collators import DataCollatorForSeq2Seq
-from utils import count_str, is_main_process
+from utils import count_str
 
 
 # A100 wants padding to multiple of 64, other cards are efficient with smaller, so just do 64
 PAD_TO_MULTIPLE = 64
 
 
-def split_batch(batch, pieces, rank=None):
+def split_batch(batch, pieces):
     example_tuple, labels = batch
-    if rank is not None or is_main_process():
-        r = f'rank {rank}: ' if rank is not None else ''
-        print(f'{r}before GAS splitting, input_ids shape: {example_tuple[0].shape}, total tokens: {example_tuple[0].numel()}')
+    rank = dist.get_rank()
+    print(f'rank {rank}: before GAS splitting, input_ids shape: {example_tuple[0].shape}, total tokens: {example_tuple[0].numel()}')
+
     split_size = example_tuple[0].size(0) // pieces
     split_examples = zip(*(torch.split(tensor, split_size) for tensor in example_tuple))
     return [(ex, None) for ex in split_examples]
