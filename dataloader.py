@@ -283,7 +283,7 @@ class PipelineDataLoader:
 
     def load_state_dict(self, state_dict):
         self.epoch = state_dict['epoch']
-        self.processed_tokens = (self.epoch - 1) * self.data_sampler.total_tokens
+        self.processed_tokens = (self.epoch - 1) * self.data_sampler.total_tokens.item()
         # -1 because by preloading the next micro_batch, it's always going to have one more batch
         # pulled than the actual number of batches iterated by the caller.
         self.num_batches_pulled = state_dict['num_batches_pulled'] - 1
