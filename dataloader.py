@@ -19,7 +19,7 @@ from utils import count_str, is_main_process
 PAD_TO_MULTIPLE = 64
 
 
-def split_batch(batch, pieces, rank=None):
+def split_batch(batch, pieces):
     example_tuple, labels = batch
     if is_main_process():
         print(f'before GAS splitting, input_ids shape: {example_tuple[0].shape}, total tokens: {example_tuple[0].numel()}')
