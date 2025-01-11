@@ -57,6 +57,7 @@ class Saver:
         self.eval_steps = config['eval_steps']
         self.unseen_steps = first_step - 1
 
+        self.old_best = None
         self.best_loss = None
         losses = os.path.join(self.save_root, 'losses.json')
         if os.path.exists(losses):
