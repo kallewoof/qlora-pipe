@@ -1,8 +1,7 @@
 from collections import deque
 
-import numpy as np
-
 import deepspeed
+import numpy as np
 import torch
 from deepspeed import comm as dist
 from deepspeed.accelerator import get_accelerator

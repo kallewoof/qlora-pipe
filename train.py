@@ -26,7 +26,7 @@ from dataset_utils import load_datasets
 from peft import LoraConfig, get_peft_model
 from peft.optimizers import create_loraplus_optimizer
 from saver import Saver
-from utils import eta_str, is_main_process, DTYPE_MAP
+from utils import DTYPE_MAP, eta_str, is_main_process
 
 
 parser = argparse.ArgumentParser()
@@ -358,6 +358,7 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
             bias='none',
             task_type='CAUSAL_LM',
             use_dora=config.get('use_dora', False),
+            use_rslora=config.get('use_rslora', False),
         )
 
         lora_model = get_peft_model(model, lora_config)
