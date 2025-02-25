@@ -23,6 +23,7 @@ import hqq_utils
 import models
 import unsloth_utils
 from dataset_utils import load_datasets
+from optimizers import c_adamw
 from peft import LoraConfig, get_peft_model
 from peft.optimizers import create_loraplus_optimizer
 from saver import Saver
@@ -500,6 +501,8 @@ if __name__ == '__main__':
 
             optimizer_cls = optimi.AdamW
             optimizer_kwargs['kahan_sum'] = optim_config.get('kahan_sum', True)
+        elif optim_type == 'c_adamw':
+            optimizer_cls = c_adamw.AdamW
         else:
             raise NotImplementedError(optim_type)
         if optim_config.get('use_loraplus', False):

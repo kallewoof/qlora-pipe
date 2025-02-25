@@ -11,7 +11,6 @@ from deepspeed import comm as dist
 from torch.utils.data import DataLoader
 
 from axolotl.utils.collators import DataCollatorForSeq2Seq
-
 from utils import count_str, is_main_process
 
 
@@ -129,8 +128,10 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
         )
         tally_tokens = torch.tensor(total_tokens, device='cuda')
         dist.all_reduce(tally_tokens)
+        # The tally was counting double for num_replicas > 1. Is num_replicas even the right name for the var?
+        tally_tokens = tally_tokens // self.num_replicas
         self.total_tokens = tally_tokens
-        print(f"rank {rank}: {count_str(self.total_tokens)} tokens/epoch")
+        print(f"rank {rank}: {count_str(self.total_tokens)} tokens/epoch [{self.num_replicas} replicas]")
 
         batches_for_this_rank = [
             global_batch[self.rank : len(global_batch) : self.num_replicas] for global_batch in global_batches
@@ -243,7 +244,10 @@ class PipelineDataLoader:
                     tokens = tokens[1:]
                 if len(tokens) > 2 and tokens[0] == self.tokenizer.bos_token_id and tokens[1] == self.tokenizer.bos_token_id:
                     raise ValueError("Double BOS token in sample.")
-                self.samplelogger.write(f"Next batch:\n********************************\n{'\n********************************\n'.join(self.tokenizer.decode(b) for b in micro_batch[0][0])}\n")
+                try:
+                    self.samplelogger.write(f"Next batch:\n********************************\n{'\n********************************\n'.join(self.tokenizer.decode(b) for b in micro_batch[0][0])}\n")
+                except Exception:
+                    print("Warning: sample logging failed. Disk drive full?")
                 yield micro_batch
 
     def _create_dataloader(self):
