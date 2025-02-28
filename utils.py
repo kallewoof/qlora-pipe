@@ -64,7 +64,7 @@ class WeightedEstimator:
     def __call__(self, added: float):
         return eta_str(added + self.eta())
 
-def utfplot(eval_loss, eval_steps=100, unseen_steps=0):
+def utfplot(eval_loss, eval_steps=100, unseen_steps=0, return_also=False):
     try:
         import plotille
     except ImportError:
@@ -85,4 +85,7 @@ def utfplot(eval_loss, eval_steps=100, unseen_steps=0):
         fig.plot([eval_step - eval_steps,eval_step], eval_loss[i-1:i+1], lc=color)
 
     # Print the plot
-    print(fig.show())
+    f = fig.show()
+    print(f)
+    if return_also:
+        return f

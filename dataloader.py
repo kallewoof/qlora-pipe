@@ -128,10 +128,13 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
         )
         tally_tokens = torch.tensor(total_tokens, device='cuda')
         dist.all_reduce(tally_tokens)
-        # The tally was counting double for num_replicas > 1. Is num_replicas even the right name for the var?
-        tally_tokens = tally_tokens // self.num_replicas
+        # The world size is the number of processes in the group, and num_replicas is how many
+        # copies of the entire model there are. Thus, we get the actual token count by dividing
+        # the accumulative tally token count by the world size over the replica count
+        duplication = dist.get_world_size() // self.num_replicas
+        tally_tokens = tally_tokens // duplication
         self.total_tokens = tally_tokens
-        print(f"rank {rank}: {count_str(self.total_tokens)} tokens/epoch [{self.num_replicas} replicas]")
+        print(f"rank {rank}: {count_str(self.total_tokens)} tokens/epoch [duplication {duplication}]")
 
         batches_for_this_rank = [
             global_batch[self.rank : len(global_batch) : self.num_replicas] for global_batch in global_batches
@@ -172,6 +175,7 @@ class PipelineDataLoader:
         group_by_length=False,
         pad_to_multiple_of=PAD_TO_MULTIPLE,
         batch_size_tokens=None,
+        samplelogger=None,
     ):
         assert data_parallel_rank < data_parallel_world_size
         self.dataset = dataset
@@ -200,7 +204,8 @@ class PipelineDataLoader:
         self._create_dataloader()
         self.data = self._pull_batches_from_dataloader()
 
-        self.samplelogger = open(f"/llm/logs/samples_{data_parallel_rank}.txt", "w")
+        self.samplelogger = samplelogger # open(f"/llm/logs/samples_{data_parallel_rank}.txt", "w")
+        self.pending = None
         self.reset()
 
     def reset(self):
@@ -245,6 +250,9 @@ class PipelineDataLoader:
                 if len(tokens) > 2 and tokens[0] == self.tokenizer.bos_token_id and tokens[1] == self.tokenizer.bos_token_id:
                     raise ValueError("Double BOS token in sample.")
                 try:
+                    if self.pending is not None:
+                        self.samplelogger.write(self.pending)
+                        self.pending = None
                     self.samplelogger.write(f"Next batch:\n********************************\n{'\n********************************\n'.join(self.tokenizer.decode(b) for b in micro_batch[0][0])}\n")
                 except Exception:
                     print("Warning: sample logging failed. Disk drive full?")

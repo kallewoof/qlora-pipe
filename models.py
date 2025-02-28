@@ -1,6 +1,7 @@
 import accelerate
 import torch
 import transformers
+from tqdm import tqdm
 
 from layers import (
     InputLayer,
@@ -32,6 +33,7 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
     def to_layer_specs(self):
         embedding_relative_size = 4
         embedding_on_cpu = not self.train_config['full_fine_tune']
+        self.loader_util.pbar = tqdm(total=len(self.model.layers) + 2)
         result = [LayerSpec(InputLayer, self, _estimated_size=0 if embedding_on_cpu else embedding_relative_size)]
         for block in self.model.layers:
             result.append(LayerSpec(LlamaDecoderLayerPipe, self, self.loader_util, block))
@@ -62,6 +64,7 @@ class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):
+        self.loader_util.pbar = tqdm(total=len(self.model.layers) + 2)
         result = [LayerSpec(InputLayer, self)]
         for block in self.model.layers:
             result.append(LayerSpec(LlamaDecoderLayerPipe, self, self.loader_util, block))
@@ -94,6 +97,7 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
         # the embedding table for this model is huge; load balance it better with some heuristics
         embedding_relative_size = 4
         embedding_on_cpu = not self.train_config['full_fine_tune']
+        self.loader_util.pbar = tqdm(total=len(self.model.layers) + 2)
         result = [LayerSpec(InputLayer, self, _estimated_size=1 if embedding_on_cpu else embedding_relative_size)]
         for block in self.model.layers:
             result.append(LayerSpec(LlamaDecoderLayerPipe, self, self.loader_util, block))
@@ -125,6 +129,7 @@ class Phi3ForCausalLMPipe(PipelineModel, transformers.Phi3ForCausalLM):
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):
+        self.loader_util.pbar = tqdm(total=len(self.model.layers) + 2)
         result = [LayerSpec(InputLayer, self)]
         for block in self.model.layers:
             result.append(LayerSpec(Phi3DecoderLayerPipe, self.loader_util, block))
@@ -158,6 +163,7 @@ class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
         # this value optimized for LoRA, pipeline_stages=2
         embedding_relative_size = 8
         embedding_on_cpu = not self.train_config['full_fine_tune']
+        self.loader_util.pbar = tqdm(total=len(self.model.layers) + 2)
         result = [LayerSpec(InputLayer, self, _estimated_size=1 if embedding_on_cpu else embedding_relative_size)]
         for block in self.model.layers:
             result.append(LayerSpec(LlamaDecoderLayerPipe, self, self.loader_util, block))
@@ -189,6 +195,7 @@ class MistralForCausalLMPipe(PipelineModel, transformers.MistralForCausalLM):
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):
+        self.loader_util.pbar = tqdm(total=len(self.model.layers) + 2)
         result = [LayerSpec(InputLayer, self)]
         for block in self.model.layers:
             result.append(LayerSpec(LlamaDecoderLayerPipe, self, self.loader_util, block))
@@ -221,6 +228,7 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
             self.num_experts_to_offload = config['offload_mlp_to_cpu']
 
     def to_layer_specs(self):
+        self.loader_util.pbar = tqdm(total=len(self.model.layers) + 2)
         result = [LayerSpec(InputLayer, self)]
         for block in self.model.layers:
             result.append(LayerSpec(MixtralDecoderLayerPipe, self, self.loader_util, block))

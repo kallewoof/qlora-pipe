@@ -296,6 +296,12 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
     else:
         raise NotImplementedError()
 
+    # Remove the loader util counter if stray one found.
+    try:
+        os.remove('.loader_util')
+    except Exception:
+        pass
+
     # CAREFUL! The "primary" layers of the model have to have 'decoderlayer' in them for
     # activation checkpointing to automatically work correctly.
     layers = model.to_layer_specs()
@@ -304,6 +310,12 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
         if isinstance(layer, LayerSpec) and 'decoderlayer' in layer.typename.__name__.lower():
             checkpointable_layers.add(layer.typename.__name__)
     checkpointable_layers = list(checkpointable_layers)
+
+    # Remove the loader util counter if stray one found.
+    try:
+        os.remove('.loader_util')
+    except Exception:
+        pass
 
     partition_method = 'estimated_size'
     if config['activation_checkpointing']:
@@ -548,6 +560,9 @@ if __name__ == '__main__':
                 module.move_mlp_to_cpu()
         torch.cuda.empty_cache()
 
+    # TODO: rank based!
+    samplelogger = open("/llm/logs/samples_0.txt" if is_main_process() else "/llm/logs/samples_1.txt", "w")
+
     train_dataloader = dataloader.PipelineDataLoader(
         train_data,
         tokenizer,
@@ -557,6 +572,7 @@ if __name__ == '__main__':
         model_engine.grid.get_data_parallel_rank(),
         group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
         batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
+        samplelogger=samplelogger,
     )
     if is_main_process():
         model_engine.total_tokens = train_dataloader.data_sampler.total_tokens * config['epochs']
@@ -570,6 +586,7 @@ if __name__ == '__main__':
     train_data_length = len(train_data)
     relative_train_time = train_data_length * 3
 
+    eval_proportion = None
     if 'eval_proportion' in config:
         if 'eval_steps' in config:
             raise ValueError("Can't use both eval_steps and eval_proportion at the same time. Pick one.")
@@ -580,6 +597,7 @@ if __name__ == '__main__':
             eval_steps = max(10, eval_steps)  # set min at 10, unless we are training a tiny set in which case we allow more frequent eval
         config['eval_steps'] = eval_steps
 
+    save_after_evals = None
     if 'save_after_evals' in config:
         if 'save_steps' in config:
             raise ValueError("Can't use both save_steps and save_after_evals at the same time. Pick one.")
@@ -688,6 +706,7 @@ if __name__ == '__main__':
             shuffle=False,
             group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
             batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
+            samplelogger=samplelogger,
         )
         for name, eval_data in eval_data_map.items()
     }
@@ -714,6 +733,7 @@ if __name__ == '__main__':
     trainmark = time.time()
     # stats = [[]]
     # current_epoch_loss = stats[0]
+    noeval_countdown = 0
     while True:
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
@@ -734,7 +754,8 @@ if __name__ == '__main__':
                 tb_writer.add_histogram('train/weight_norm_hist', norms, step)
             tb_writer.add_scalar('train/epoch', step / steps_per_epoch, step)
 
-        if step % config['eval_steps'] == 0:
+        noeval_countdown -= 1
+        if step % config['eval_steps'] == 0 and noeval_countdown < 1:
             if is_main_process():
                 eval_time = time.time()
                 trained_time = eval_time - trainmark
@@ -744,10 +765,47 @@ if __name__ == '__main__':
             saver.append_eval_results(loss)
             if is_main_process():
                 eval_time = time.time() - eval_time
-                print(f"Eval took {eta_str(eval_time)}. Eval vs training: {100 * eval_time / trained_time:.2f}%")
+                actual_proportion = eval_time / trained_time
+                print(f"Eval took {eta_str(eval_time)}. Eval vs training: {100 * actual_proportion:.2f}%")
                 if model_engine.eval_time is None:
                     model_engine.eval_time = eval_time
                 model_engine.evals_left -= 1
+                # if eval_proportion is not None and abs(eval_proportion - actual_proportion) > 0.02:
+                #     tweaked = True
+                #     # We are 2%+ away from the target eval vs train proportion. Try to tweak
+
+                #     # eval_time == trained_time * eval_proportion
+                #     # eval_time == target_steps * time_per_step * eval_proportion
+                #     # target_steps =          eval_time
+                #     #               -------------------------------
+                #     #               time_per_step * eval_proportion
+                #     time_per_step = trained_time / config['eval_steps']
+                #     target_steps = max(10, int(eval_time / (time_per_step * eval_proportion) / 5) * 5)
+                #     if abs(target_steps - config['eval_steps']) > 4:
+                #         if target_steps > config['eval_steps']:
+                #             # Too frequently
+                #             noeval_countdown = target_steps - 1
+                #         config['eval_steps'] = target_steps
+                #     elif eval_proportion > actual_proportion:
+                #         # We are evaluating too seldomly
+                #         target = trained_time * eval_proportion
+                #         tweaked = config['eval_steps'] > 10
+                #         config['eval_steps'] = max(10, config['eval_steps'] - 5)
+                #     else:
+                #         # We are evaluating too frequently
+                #         config['eval_steps'] += 5
+                #         noeval_countdown = config['eval_steps'] - 1
+
+                #     if tweaked:
+                #         next_eval = (step + noeval_countdown + config['eval_steps']) // config['eval_steps']
+                #         next_eval *= config['eval_steps']
+                #         print(f"{eval_proportion:.2f} vs {actual_proportion:.2f} [{actual_proportion-eval_proportion:.2f}] :: Adjusting eval steps: {config['eval_steps']} with noeval_countdown {noeval_countdown}. Next eval at step {next_eval}.")
+
+                #         if save_after_evals is not None:
+                #             config['save_steps'] = max(10, int(save_after_evals * config['eval_steps']))
+                #             if saver.config['save_steps'] != config['save_steps']:
+                #                 print("Warning: saver config is detached.")
+                #                 saver.config['save_steps'] = config['save_steps']
 
         saver.process_step(step)
 

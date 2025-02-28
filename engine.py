@@ -139,6 +139,9 @@ class CustomPipelineEngine(PipelineEngine):
             token_sum = torch.tensor(self.token_counter.processed_tokens, device='cuda')
             dist.reduce(token_sum, 0)
             if self.global_rank == 0:
+                def LOG(s):
+                    self.token_counter.pending = (self.token_counter.pending or '') + s + '\n'
+                    log(s)
                 eval_rem = self.eval_time * self.evals_left if self.eval_time is not None else 0
                 # Temporary until we confirm this shit works: {
                 token_sum = token_sum.item()
@@ -156,7 +159,7 @@ class CustomPipelineEngine(PipelineEngine):
 
                 if self.last_finished == 0 and self.global_steps > 1:
                     # No ETA for the first step, if it involves a resume as results will be off
-                    log(f'step: {self.global_steps:>5} / {self.total_steps:>5} '
+                    LOG(f'step: {self.global_steps:>5} / {self.total_steps:>5} '
                         f'loss: {self.agg_train_loss:0.4f} '
                         f'{iter_expr} '
                         f'{tput_expr}')
@@ -180,7 +183,7 @@ class CustomPipelineEngine(PipelineEngine):
                         self.elapsed_hist[0].popleft()
                         self.elapsed_hist[1].popleft()
                     # rolling_eta = sum(self.etas) / len(self.etas)
-                    log(f'step: {self.global_steps:>5} / {self.total_steps:>5} '
+                    LOG(f'step: {self.global_steps:>5} / {self.total_steps:>5} '
                         f'loss: {self.agg_train_loss:0.4f} '
                         f'tokens: {int(processed_tokens)} '
                         f'[{count_str(token_sum)} / {count_str(self.total_tokens)} = {100.0 * token_sum/self.total_tokens:.2f}%] '

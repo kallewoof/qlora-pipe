@@ -254,11 +254,14 @@ class Saver:
             sys.exit()
 
     def append_eval_results(self, loss, save_best=True):
+        def LOG(s):
+            self.train_dataloader.samplelogger.write(s + "\n")
+            print(s)
         if loss is not None:
             if self.best_loss is None:
-                print(f'Evaluation loss: {loss:.4f}')
+                LOG(f'Evaluation loss: {loss:.4f}')
             elif loss >= self.best_loss:
-                print(
+                LOG(
                     f'Evaluation loss: {loss:.4f} (best: {self.best_loss:.4f}, Δ: {self.best_loss - loss:.5f} [{100 * (1 - loss / self.best_loss):.2f}%])'
                 )
             if self.best_loss is None or loss < self.best_loss:
@@ -268,7 +271,8 @@ class Saver:
                     with open(os.path.join(self.save_root, '.pending_save_best_loss'), 'w') as f:
                         f.write(str(self.best_loss))
             self.loss_history.append(loss)
-            utfplot(self.loss_history, self.eval_steps, self.unseen_steps)
+            plot = utfplot(self.loss_history, self.eval_steps, self.unseen_steps, return_also=True)
+            self.train_dataloader.pending = (self.train_dataloader.pending or '') + plot
             json.dump({
                 'history': self.loss_history,
                 'best': self.best_loss
