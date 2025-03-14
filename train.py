@@ -480,10 +480,11 @@ if __name__ == '__main__':
     deepspeed.comm.barrier()
     run_dir = get_most_recent_run_dir(config['output_dir'])
 
-    # Commit the configuration files to git
-    with open("projects/last_run", "w") as f:
-        f.write(f"{datetime.now(None if args.local_timezone else timezone.utc).strftime('%Y%m%d_%H-%M-%S')}: {run_dir}\n")
-    os.system(f"cd projects && git commit -am 'RUN: {run_dir}'")
+    if is_main_process():
+        # Commit the configuration files to git
+        with open("projects/last_run", "w") as f:
+            f.write(f"{datetime.now(None if args.local_timezone else timezone.utc).strftime('%Y%m%d_%H-%M-%S')}: {run_dir}\n")
+        os.system(f"cd projects && git commit -am 'RUN: {run_dir}'")
 
     # Ugly hack so we can move quantized models from GPU to CPU, and back to GPU again without triggering quantization a second time.
     bnb_cuda_old = bitsandbytes.nn.modules.Params4bit.cuda
