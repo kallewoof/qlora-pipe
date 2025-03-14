@@ -262,6 +262,7 @@ class Gemma3ForCausalLMPipe(PipelineModel, transformers.Gemma3ForCausalLM):
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):
+        self.loader_util.pbar = tqdm(total=len(self.model.layers) + 2)
         # the embedding table for this model is huge; load balance it better with some heuristics
         # this value optimized for LoRA, pipeline_stages=2
         embedding_relative_size = 8
