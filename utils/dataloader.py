@@ -296,7 +296,7 @@ class PipelineDataLoader:
                 continue
             self.num_batches_pulled += 1
             for micro_batch in split_batch(batch, self.gradient_accumulation_steps):
-                tokens = micro_batch[0][0][0]
+                tokens = micro_batch['input_ids'] # [0][0][0]
                 while len(tokens) > 2 and tokens[0] == self.tokenizer.pad_token_id:
                     tokens = tokens[1:]
                 if len(tokens) > 2 and tokens[0] == self.tokenizer.bos_token_id and tokens[1] == self.tokenizer.bos_token_id:
@@ -305,7 +305,7 @@ class PipelineDataLoader:
                     if self.pending is not None:
                         self.samplelogger.write(self.pending)
                         self.pending = None
-                    self.samplelogger.write(f"Next batch:\n********************************\n{'\n********************************\n'.join(self.tokenizer.decode(b) for b in micro_batch[0][0])}\n")
+                    self.samplelogger.write(f"Next batch:\n********************************\n{'\n********************************\n'.join(self.tokenizer.decode(b) for b in micro_batch['input_ids'])}\n")
                 except Exception:
                     print("Warning: sample logging failed. Disk drive full?")
                 if self.return_dict:
