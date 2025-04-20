@@ -279,10 +279,11 @@ class Saver:
             self.loss_history.append(loss)
             plot = utfplot(self.loss_history, self.eval_steps, self.unseen_steps, return_also=True)
             self.train_dataloader.pending = (self.train_dataloader.pending or '') + plot
-            json.dump({
-                'history': self.loss_history,
-                'best': self.best_loss
-            }, open(os.path.join(self.save_root, 'losses.json'), 'w'))
+            with open(os.path.join(self.save_root, 'losses.json'), 'w') as f:
+                json.dump({
+                    'history': self.loss_history,
+                    'best': self.best_loss
+                }, f, indent=2)
 
         deepspeed.comm.barrier()
 
