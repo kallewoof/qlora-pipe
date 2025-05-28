@@ -296,5 +296,6 @@ class Saver:
                 return
             except OSError as e:
                 if attempt == max_retries:
-                    raise e
+                    print(f"Warning: failed to remove dir {dir_path}: {e}")
+                    return
                 time.sleep(initial_wait_seconds * 2**attempt)

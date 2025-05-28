@@ -68,7 +68,7 @@ def set_config_defaults(config):
 
 
 def get_most_recent_run_dir(output_dir):
-    return sorted(glob.glob(os.path.join(output_dir, '*')))[-1]
+    return sorted(file for file in glob.glob(os.path.join(output_dir, '*')) if not file.endswith("latest"))[-1]
 
 
 def write_metrics(tb_writer, prefix, metrics, step):
@@ -394,6 +394,16 @@ def load_pipeline_model_with_lora(config, model_type):
 
 
 if __name__ == '__main__':
+
+    statvfs = os.statvfs(".")
+    free_space = statvfs.f_frsize * statvfs.f_bavail / (1024 * 1024 * 1024)
+    if free_space < 10:
+        if is_main_process():
+            print(f"WARNING: Only {free_space:.2f} GB free on disk. This may cause issues.")
+        time.sleep(5)
+    elif is_main_process():
+        print(f"Space available on drive: {free_space:.2f} GB.")
+
     # TODO: if resuming from checkpoint, probably should read all config files from checkpoint dir
     # rather than assume they are unchanged on the command line
     with open(args.config) as f:
@@ -472,7 +482,15 @@ if __name__ == '__main__':
 
     # if this is a new run, create a new dir for it
     if not resume_from_checkpoint and is_main_process():
-        run_dir = os.path.join(config['output_dir'], datetime.now(None if args.local_timezone else timezone.utc).strftime('%Y%m%d_%H-%M-%S'))
+        date_str = datetime.now(None if args.local_timezone else timezone.utc).strftime('%Y%m%d_%H-%M-%S')
+        run_dir = os.path.join(config['output_dir'], date_str)
+        # Delete existing and create a symlink "latest" in output_dir that points to run_dir:
+        latest_symlink = os.path.join(config['output_dir'], 'latest')
+        try:
+            os.unlink(latest_symlink)  # we can't use 'exists' since that will say no if the symlink is broken
+        except Exception:
+            pass
+        os.symlink(date_str, latest_symlink)
         print(f"NEW RUN DIR M8: {run_dir}")
         os.makedirs(run_dir, exist_ok=True)
         shutil.copy(args.config, run_dir)
