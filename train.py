@@ -44,6 +44,7 @@ parser.add_argument('--no_quantiles', action='store_true', help='suppress output
 parser.add_argument('--append', action='store_true', help='Resume from the given checkpoint, but train on the entire dataset. This can be used to append additional training data after a previous training run. Note that learning rate must be manually adjusted as it will otherwise reset back to the starting learning rate.')
 parser.add_argument('--local_timezone', action='store_true', help='Use local timezone for directory names for runs.')
 parser.add_argument('--starting_eval_loss', type=float, default=-1, help='Provide a starting eval loss to override initial eval loss check. Do not use unless you have run an instance on the same eval dataset/model once and know the eval loss.')
+parser.add_argument('--run_dir', type=str, help='Use the given directory, rather than a timestamp based one, to store results. The directory is appended to the output_dir given in the config .toml file.')
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 
@@ -482,15 +483,15 @@ if __name__ == '__main__':
 
     # if this is a new run, create a new dir for it
     if not resume_from_checkpoint and is_main_process():
-        date_str = datetime.now(None if args.local_timezone else timezone.utc).strftime('%Y%m%d_%H-%M-%S')
-        run_dir = os.path.join(config['output_dir'], date_str)
+        run_dir_last = args.run_dir or datetime.now(None if args.local_timezone else timezone.utc).strftime('%Y%m%d_%H-%M-%S')
+        run_dir = os.path.join(config['output_dir'], run_dir_last)
         # Delete existing and create a symlink "latest" in output_dir that points to run_dir:
         latest_symlink = os.path.join(config['output_dir'], 'latest')
         try:
             os.unlink(latest_symlink)  # we can't use 'exists' since that will say no if the symlink is broken
         except Exception:
             pass
-        os.symlink(date_str, latest_symlink)
+        os.symlink(run_dir_last, latest_symlink)
         print(f"NEW RUN DIR M8: {run_dir}")
         os.makedirs(run_dir, exist_ok=True)
         shutil.copy(args.config, run_dir)
@@ -800,6 +801,10 @@ if __name__ == '__main__':
         if is_main_process() and step % config['logging_steps'] == 0:
             write_metrics(tb_writer, 'train', metrics, step)
             tb_writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], step)
+
+            # grad_norm = model_engine.get_global_grad_norm()
+            # tb_writer.add_scalar('train/grad_norm', grad_norm, step)
+
             # TODO: gather the weight norms across all stages in the pipelined model, not just the first.
             if lora_config is not None and len(norms) > 0:
                 tb_writer.add_scalar('train/weights_scaled', keys_scaled, step)
