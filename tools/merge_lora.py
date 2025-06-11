@@ -89,7 +89,7 @@ for shard in (pbar := tqdm(shards)):
             lora_A, lora_B = find_lora_weights(lora_key)
             if lora_A is not None:
                 found += 1
-                pbar.set_description(f'found lora weights for {key}: {lora_A.size()}, {lora_B.size()}')
+                pbar.set_description(f'{key}: {lora_A.size()}, {lora_B.size()}')
                 old_type = tensor.dtype
                 tensor = tensor.to(torch.float32)
                 tensor += scale * lora_B.to(torch.float32) @ lora_A.to(torch.float32)
