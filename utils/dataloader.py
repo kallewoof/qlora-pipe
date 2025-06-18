@@ -281,10 +281,11 @@ class PipelineDataLoader:
         return len(self.data_sampler) * self.gradient_accumulation_steps
 
     def __next__(self):
-        if self.next_micro_batch is None:
-            self.next_micro_batch = next(self.data)
-        ret = self.next_micro_batch
+        ret = None
         try:
+            if self.next_micro_batch is None:
+                self.next_micro_batch = next(self.data)
+            ret = self.next_micro_batch
             self.next_micro_batch = next(self.data)
         except StopIteration:
             if self.recreate_dataloader:
@@ -294,6 +295,9 @@ class PipelineDataLoader:
             self.num_batches_pulled = 0
             self.next_micro_batch = next(self.data)
             self.epoch += 1
+            if not ret:
+                ret = self.next_micro_batch
+                self.next_micro_batch = next(self.data)
         return ret
 
     def _pull_batches_from_dataloader(self):

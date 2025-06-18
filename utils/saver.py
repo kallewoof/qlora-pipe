@@ -278,6 +278,7 @@ class Saver:
                         f.write(str(self.best_loss))
             self.loss_history.append(loss)
             plot = utfplot(self.loss_history, self.eval_steps, self.unseen_steps, return_also=True)
+            assert plot
             self.train_dataloader.pending = (self.train_dataloader.pending or '') + plot
             with open(os.path.join(self.save_root, 'losses.json'), 'w') as f:
                 json.dump({

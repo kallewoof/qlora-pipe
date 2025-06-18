@@ -71,6 +71,7 @@ def utfplot(eval_loss, eval_steps=100, unseen_steps=0, return_also=False):
         import plotille
     except ImportError:
         # Skipping plots
+        assert not return_also
         return
 
     # Create the plot
