@@ -288,6 +288,8 @@ def load_pipeline_model_with_lora(config, model_type):
         model = models.MixtralForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'qwen2':
         model = models.Qwen2ForCausalLMPipe(config, quantization_config=quantization_config)
+    elif model_type == 'qwen3':
+        model = models.Qwen3ForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'cohere':
         model = models.CohereForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'phi3':

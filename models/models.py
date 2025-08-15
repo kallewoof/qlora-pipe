@@ -4,6 +4,9 @@ import transformers
 from tqdm import tqdm
 
 from models.layers import (
+    Gemma3DecoderLayerPipe,
+    Gemma3InputLayer,
+    Gemma3RMSNormPipe,
     InputLayer,
     LayerSpec,
     LlamaDecoderLayerPipe,
@@ -12,12 +15,10 @@ from models.layers import (
     MixtralOutputLayer,
     OutputLayer,
     Phi3DecoderLayerPipe,
-    Gemma3InputLayer,
-    Gemma3DecoderLayerPipe,
-    Gemma3RMSNormPipe,
 )
 from models.pipeline_model import PipelineModel
 from utils.utils import DTYPE_MAP
+
 
 DEFAULT_ATTN_IMPLEMENTATION = 'flash_attention_2'
 
@@ -185,6 +186,43 @@ class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
                 _estimated_size=embedding_relative_size,
             )
         )
+        return result
+
+
+class Qwen3ForCausalLMPipe(PipelineModel, transformers.Qwen3ForCausalLM):
+    def __init__(self, config, quantization_config):
+        model_config = transformers.Qwen3Config.from_pretrained(config['model'])
+        model_config._attn_implementation = config.get('attn_implementation', DEFAULT_ATTN_IMPLEMENTATION)
+        torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
+
+        with accelerate.init_empty_weights():
+            transformers.Qwen3ForCausalLM.__init__(self, model_config)
+            PipelineModel.__init__(self, config, quantization_config, model_config)
+        torch.set_default_dtype(torch.float32)
+
+    def to_layer_specs(self):
+        total_layers = len(self.model.layers) + 2
+        self.loader_util.pbar = tqdm(total=total_layers)
+        result = [LayerSpec(InputLayer, self)]
+        for block in self.model.layers:
+            result.append(LayerSpec(LlamaDecoderLayerPipe, self, self.loader_util, block))
+        result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
+        tie_weights = None
+        if hasattr(self.config, 'tie_word_embeddings') and self.config.tie_word_embeddings:
+            tie_weights = 'model.embed_tokens.weight'
+
+        result.append(
+            LayerSpec(
+                OutputLayer,
+                self,
+                self.loader_util,
+                self.lm_head,
+                loss_type=self.loss_type,
+                focal_loss_gamma=self.focal_loss_gamma,
+                tie_weights=tie_weights,
+            )
+        )
+
         return result
 
 
