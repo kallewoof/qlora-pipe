@@ -15,7 +15,7 @@ DTYPE_MAP = {'float32': torch.float32, 'float16': torch.float16, 'bfloat16': tor
 
 # Simplified logger-like printer.
 def log(msg):
-    print(f'[{datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]}] [INFO] [qlora-pipe] {msg}')
+    print(f'[{datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]}] [INFO] [𝐐☰] {msg}')
 
 
 def eta_str(eta):
