@@ -416,6 +416,7 @@ if __name__ == '__main__':
     if hasattr(args, 'deepspeed_config') and args.deepspeed_config is not None:
         # engine.initialize() will load deepspeed config from args
         ds_config = None
+        raise ValueError
     else:
         # The necessary ds_config fields are taken from the TOML config file.
         ds_config = {
@@ -424,6 +425,8 @@ if __name__ == '__main__':
             'gradient_clipping': config.get('gradient_clipping', 1.0),
             'steps_per_print': config.get('steps_per_print', 1),
         }
+
+    print(f"\n\n\nDeepspeed config:\n{json.dumps(ds_config, indent=6)}")
 
     resume_from_checkpoint = (
         args.resume_from_checkpoint

@@ -7,12 +7,12 @@ from typing import Optional
 import accelerate
 import bitsandbytes as bnb
 import transformers
+from accelerate.utils import set_module_tensor_to_device
 from deepspeed.accelerator import get_accelerator
 from hqq.core import quantize as hqq_quantize
 from torch import nn
 from tqdm import tqdm
 from transformers.integrations import get_keys_to_not_convert
-from accelerate.utils import set_module_tensor_to_device
 
 import utils.hqq_utils as hqq_utils
 from utils.utils import is_main_process
@@ -233,7 +233,11 @@ class LoaderUtil:
 
     def load_state_dict_into_module(self, module):
         if self.local_rank == 0:
-            self.pbar.set_description(f'load params into module {type(module)}')
+            mname = f"{type(module)}"
+            if mname.startswith("<class 'models.layers.") and mname.endswith("'>"):
+                mname = mname[len("<class 'models.layers."):-2]
+            assert self.pbar is not None
+            self.pbar.set_description(f'load params into module {mname}')
         if isinstance(self.quantization_config, transformers.BitsAndBytesConfig):
             # bnb needs to replace with quantized linear before weights are loaded
             self.maybe_quantize(module)
